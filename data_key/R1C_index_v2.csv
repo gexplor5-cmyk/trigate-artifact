@@ -1,0 +1,25 @@
+run_id,rep,grace_ms,reclaimed,zombie_evt_cnt,agent_alive,note
+c1_lease_0_rep1,1,0,0,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_0_rep2,2,0,0,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_0_rep3,3,0,0,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_1000_rep1,1,1000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_1000_rep2,2,1000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_1000_rep3,3,1000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_2000_rep1,1,2000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_2000_rep2,2,2000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_2000_rep3,3,2000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_5000_rep1,1,5000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_5000_rep2,2,5000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c1_lease_5000_rep3,3,5000,20,1,1,reclaim_delay_s 列全空(B-m5 如实标注：延迟由 grace 语义推定未实测)
+c3_pos_both_rep1,1,,,0,NA,pos=both; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_both_rep2,2,,,0,NA,pos=both; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_both_rep3,3,,,0,NA,pos=both; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_e2_only_rep1,1,,,1501,NA,pos=e2_only; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_e2_only_rep2,2,,,1501,NA,pos=e2_only; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_e2_only_rep3,3,,,1501,NA,pos=e2_only; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_none_rep1,1,,,0,NA,pos=none; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_none_rep2,2,,,0,NA,pos=none; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_none_rep3,3,,,0,NA,pos=none; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_ric_only_rep1,1,,,0,NA,pos=ric_only; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_ric_only_rep2,2,,,0,NA,pos=ric_only; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判
+c3_pos_ric_only_rep3,3,,,0,NA,pos=ric_only; E2 REFUSE 累计口径; ric_alive 由 ric.log 尾部断言签名重判

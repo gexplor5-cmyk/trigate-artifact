@@ -1,0 +1,1625 @@
+diff --git a/examples/xApp/c/kpm_rc/CMakeLists.txt b/examples/xApp/c/kpm_rc/CMakeLists.txt
+index 1da20f7..a9e2c5b 100644
+--- a/examples/xApp/c/kpm_rc/CMakeLists.txt
++++ b/examples/xApp/c/kpm_rc/CMakeLists.txt
+@@ -11,3 +11,68 @@ target_link_libraries(xapp_kpm_rc
+                       -ldl
+                       )
+ 
++add_executable(xapp_flood
++  xapp_flood.c
++  ../../../../src/util/alg_ds/alg/defer.c
++  )
++
++ target_link_libraries(xapp_flood
++                      PUBLIC
++                      e42_xapp
++                      -pthread
++                      -lsctp
++                      -ldl
++                      )
++
++add_executable(xapp_churn
++  xapp_churn.c
++  ../../../../src/util/alg_ds/alg/defer.c
++  )
++
++ target_link_libraries(xapp_churn
++                      PUBLIC
++                      e42_xapp
++                      -pthread
++                      -lsctp
++                      -ldl
++                      )
++
++add_executable(xapp_async
++  xapp_async.c
++  ../../../../src/util/alg_ds/alg/defer.c
++  )
++
++ target_link_libraries(xapp_async
++                      PUBLIC
++                      e42_xapp
++                      -pthread
++                      -lsctp
++                      -ldl
++                      )
++
++
++add_executable(xapp_benign
++  xapp_benign.c
++  ../../../../src/util/alg_ds/alg/defer.c
++  )
++
++ target_link_libraries(xapp_benign
++                      PUBLIC
++                      e42_xapp
++                      -pthread
++                      -lsctp
++                      -ldl
++                      )
++
++add_executable(xapp_wcet
++  xapp_wcet.c
++  ../../../../src/util/alg_ds/alg/defer.c
++  )
++
++ target_link_libraries(xapp_wcet
++                      PUBLIC
++                      e42_xapp
++                      -pthread
++                      -lsctp
++                      -ldl
++                      )
+diff --git a/src/agent/e2_agent.c b/src/agent/e2_agent.c
+index 7eb1e38..a281452 100644
+--- a/src/agent/e2_agent.c
++++ b/src/agent/e2_agent.c
+@@ -22,6 +22,7 @@
+ #include "asio_agent.h"
+ #include "e2_agent.h"
+ #include "endpoint_agent.h"
++#include "util/time_now_us.h"
+ #include "msg_handler_agent.h"
+ #include "not_handler_agent.h"
+ #include "lib/async_event.h"
+@@ -373,24 +374,41 @@ void e2_event_loop_agent(e2_agent_t* ag)
+         }
+       case INDICATION_EVENT:
+         {
++          /* [WCET] R1-D：单次 indication 处理耗时打点（agent 单线程事件循环=单服务器模型）。
++             双口径：单次最坏值（WCET）+均值（与smoke秒级采样口径可比）。 */
++          struct timespec wcet_t0, wcet_t1;
++          clock_gettime(CLOCK_MONOTONIC, &wcet_t0);
+           sm_agent_t const* sm = e.i_ev->sm;
+-          void* act_def = e.i_ev->act_def; 
++          void* act_def = e.i_ev->act_def;
+           exp_ind_data_t exp = sm->proc.on_indication(sm, act_def); // , &e.i_ev->ric_id);
+-          // Condition not matched e.g., No UE matches condition 
++          // Condition not matched e.g., No UE matches condition
+           if(exp.has_value == false){
+             printf("[E2 AGENT]: Condition not matched e.g., No UE matches condition. Emulator triggers this condition for testing, but not the RAN \n");
+             consume_fd_sync(e.fd);
+-            break;  
++            break;
+           }
+           ric_indication_t ind = generate_indication(ag, &exp.data, e.i_ev);
+           defer({ e2ap_free_indication(&ind); } );
+ 
+-          byte_array_t ba = e2ap_enc_indication_ag(&ag->ap, &ind); 
++          byte_array_t ba = e2ap_enc_indication_ag(&ag->ap, &ind);
+           defer({ free_byte_array(ba); } );
+ 
+           e2ap_send_bytes_agent(&ag->ep, ba);
+ 
+           consume_fd_sync(e.fd);
++          clock_gettime(CLOCK_MONOTONIC, &wcet_t1);
++          {
++            extern void wcet_record_ind(int64_t us);
++            wcet_record_ind((wcet_t1.tv_sec - wcet_t0.tv_sec)*1000000LL
++                            + (wcet_t1.tv_nsec - wcet_t0.tv_nsec)/1000);
++          }
++          /* [E2-LEASE] 失联后 indication 事件仍不断（僵尸流本身）——回收检查挂此必经路径 */
++          {
++            extern int64_t g_e2_ric_lost_us;
++            extern size_t e2_lease_reclaim_ind_events(e2_agent_t* ag);
++            if(g_e2_ric_lost_us != 0)
++              e2_lease_reclaim_ind_events(ag);
++          }
+ 
+           break;
+         }
+@@ -409,17 +427,41 @@ void e2_event_loop_agent(e2_agent_t* ag)
+           e2ap_send_bytes_agent(&ag->ep, ba);
+ 
+           consume_fd_sync(e.fd);
++          /* [E2-LEASE] 失联后 setup 重发 timer 周期触发——回收检查挂此必经路径 */
++          {
++            extern int64_t g_e2_ric_lost_us;
++            extern size_t e2_lease_reclaim_ind_events(e2_agent_t* ag);
++            if(g_e2_ric_lost_us != 0)
++              e2_lease_reclaim_ind_events(ag);
++          }
+ 
+           break;
+         }
+-      case SCTP_CONNECTION_SHUTDOWN_EVENT: 
++      case SCTP_CONNECTION_SHUTDOWN_EVENT:
+         {
+           notification_handle_ag(ag, &e.msg);
+           free_sctp_msg(&e.msg);
++          /* [E2-LEASE] R1-C：记录 RIC 失联时刻（租约宽限期起点）。
++             外部声明于 msg_handler_agent.c（int64_t g_e2_ric_lost_us）。 */
++          {
++            extern int64_t g_e2_ric_lost_us;
++            if(g_e2_ric_lost_us == 0){
++              g_e2_ric_lost_us = time_now_us();
++              printf("[E2-LEASE] RIC lost detected at %lld us; grace timer starts\n",
++                     (long long)g_e2_ric_lost_us);
++            }
++          }
+           break;
+         }
+       case CHECK_STOP_TOKEN_EVENT:
+         {
++          /* [E2-LEASE] R1-C：事件循环空转 tick——宽限期到则回收全部僵尸订阅 */
++          {
++            extern int64_t g_e2_ric_lost_us;
++            extern size_t e2_lease_reclaim_ind_events(e2_agent_t* ag);
++            if(g_e2_ric_lost_us != 0)
++              e2_lease_reclaim_ind_events(ag);
++          }
+           break;
+         }
+       default:
+diff --git a/src/agent/msg_handler_agent.c b/src/agent/msg_handler_agent.c
+index 159ed75..b5ac066 100644
+--- a/src/agent/msg_handler_agent.c
++++ b/src/agent/msg_handler_agent.c
+@@ -27,9 +27,171 @@
+ #include "util/alg_ds/alg/alg.h"
+ #include "util/alg_ds/ds/lock_guard/lock_guard.h"
+ #include "util/compare.h"
++#include "util/time_now_us.h"
+ 
+ #include <assert.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <time.h>
++
++/* === [E2-GATE]/[E2-RATE]/[E2-LEASE] R1-C：E2 节点侧协议对端强制（三上界下沉 E2）===
++ * 动机：smoke test实证——只删 RIC 侧表时 E2 agent 僵尸指示流 160 万条反灌（CPU 142%）。
++ * E2 侧强制=闸门下沉：即使 RIC 被绕过/攻陷/失联，E2 节点自身资源仍受保护。
++ * 环境变量（agent 进程）：
++ *   FLEXRIC_AGENT_SUB_CAP   全局（per-E2 节点）订阅存量上界（0=off）
++ *   FLEXRIC_AGENT_RATE_CAP  每 1s 订阅建立速率上界（0=off）
++ *   FLEXRIC_AGENT_GRACE_MS  RIC 失联后宽限期（租约回收，0=off；DHCP θ-cleanup 同构）
++ * REFUSE 语义（最小版）：不建立订阅、不响应（NONE）——与 RIC 侧 [GATE] REFUSE 同构。
++ * 标准化映射（E2AP 扩展 IE 的配额下发与 RIC_SUBSCRIPTION_FAILURE 响应）→ R2。 */
++
++static long e2_sub_cap(void)
++{
++  static long cap = -1;
++  if(cap == -1){
++    const char* env = getenv("FLEXRIC_AGENT_SUB_CAP");
++    cap = (env != NULL) ? atol(env) : 0;
++    printf("[E2-GATE] FLEXRIC_AGENT_SUB_CAP=%ld (0=off)\n", cap);
++  }
++  return cap;
++}
++
++static long e2_rate_cap(void)
++{
++  static long cap = -1;
++  if(cap == -1){
++    const char* env = getenv("FLEXRIC_AGENT_RATE_CAP");
++    cap = (env != NULL) ? atol(env) : 0;
++    printf("[E2-RATE] FLEXRIC_AGENT_RATE_CAP=%ld (0=off)\n", cap);
++  }
++  return cap;
++}
++
++static long e2_grace_ms(void)
++{
++  static long g = -1;
++  if(g == -1){
++    const char* env = getenv("FLEXRIC_AGENT_GRACE_MS");
++    g = (env != NULL) ? atol(env) : 0;
++    printf("[E2-LEASE] FLEXRIC_AGENT_GRACE_MS=%ld (0=off)\n", g);
++  }
++  return g;
++}
++
++/* 每秒计数速率窗（最小滑动窗=秒级桶，与 RIC 侧 [RATE] 同构简化） */
++static int64_t e2_rate_win_us = 0;
++static long e2_rate_cnt = 0;
++static long e2_rate_refused = 0;
++static long e2_cap_refused = 0;
++
++/* 失联时刻（us；0=连接正常）——由 e2_agent.c 事件循环维护 */
++int64_t g_e2_ric_lost_us = 0;
++
++/* === [WCET] R1-D：indication 处理与订阅建立的双口径耗时统计 === */
++static int64_t wcet_ind_max_us = 0;
++static int64_t wcet_ind_sum_us = 0;
++static long    wcet_ind_cnt = 0;
++static int64_t wcet_sub_max_us = 0;
++static int64_t wcet_sub_sum_us = 0;
++static long    wcet_sub_cnt = 0;
++static int64_t wcet_last_report_us = 0;
++
++void wcet_record_ind(int64_t us)
++{
++  if(us > wcet_ind_max_us) wcet_ind_max_us = us;
++  wcet_ind_sum_us += us;
++  wcet_ind_cnt++;
++  int64_t now = time_now_us();
++  if(now - wcet_last_report_us > 5000000LL){ // 每 5s 报告一次（增量+累计）
++    printf("[WCET] ind: n=%ld mean=%.1fus max=%lldus | sub_build: n=%ld mean=%.1fus max=%lldus\n",
++           wcet_ind_cnt, (double)wcet_ind_sum_us/wcet_ind_cnt, (long long)wcet_ind_max_us,
++           wcet_sub_cnt, wcet_sub_cnt ? (double)wcet_sub_sum_us/wcet_sub_cnt : 0.0,
++           (long long)wcet_sub_max_us);
++    fflush(stdout);
++    wcet_last_report_us = now;
++  }
++}
++
++void wcet_record_sub(int64_t us)
++{
++  if(us > wcet_sub_max_us) wcet_sub_max_us = us;
++  wcet_sub_sum_us += us;
++  wcet_sub_cnt++;
++}
++
++bool e2_enforce_gate(size_t ind_event_sz)
++{
++  // 失联宽限期内拒新订阅（租约语义：持有者死亡→不再接纳其新租约）
++  const long grace = e2_grace_ms();
++  if(grace > 0 && g_e2_ric_lost_us != 0){
++    e2_rate_refused++;
++    if(e2_rate_refused % 500 == 1)
++      printf("[E2-LEASE] RIC lost; REFUSE new subscription during grace (%ld)\n", e2_rate_refused);
++    return false;
++  }
++  // 存量上界
++  const long cap = e2_sub_cap();
++  if(cap > 0 && (long)ind_event_sz >= cap){
++    e2_cap_refused++;
++    if(e2_cap_refused % 500 == 1)
++      printf("[E2-GATE] ind_event %zu >= CAP %ld → REFUSE (累计 %ld)\n", ind_event_sz, cap, e2_cap_refused);
++    return false;
++  }
++  // 速率上界
++  const long rcap = e2_rate_cap();
++  if(rcap > 0){
++    int64_t now = time_now_us();
++    if(now - e2_rate_win_us > 1000000L){
++      e2_rate_win_us = now;
++      e2_rate_cnt = 0;
++    }
++    e2_rate_cnt++;
++    if(e2_rate_cnt > rcap){
++      e2_rate_refused++;
++      if(e2_rate_refused % 500 == 1)
++        printf("[E2-RATE] 1s 内 %ld > CAP %ld → REFUSE (累计 %ld)\n", e2_rate_cnt, rcap, e2_rate_refused);
++      return false;
++    }
++  }
++  return true;
++}
++
++/* 前向声明（stop_ind_event 定义在下方） */
++static bool stop_ind_event(e2_agent_t* ag, ric_gen_id_t id);
++
++/* [E2-LEASE] 租约回收：RIC 失联超过宽限期→回收全部 ind_event（僵尸指示流归零）。
++ * 返回回收条数。由 e2_agent.c 事件循环空转 tick 调用。 */
++size_t e2_lease_reclaim_ind_events(e2_agent_t* ag)
++{
++  const long grace = e2_grace_ms();
++  if(grace <= 0 || g_e2_ric_lost_us == 0) return 0;
++  int64_t now = time_now_us();
++  if(now - g_e2_ric_lost_us < (int64_t)grace * 1000L) return 0;
++
++  size_t reclaimed = 0;
++  while(true){
++    // 手动锁取一个 ric_id（stop_ind_event 内部也加锁，不可重入）
++    pthread_mutex_lock(&ag->mtx_ind_event);
++    void* start_r = assoc_rb_tree_front(&ag->ind_event.right);
++    void* end_r = assoc_rb_tree_end(&ag->ind_event.right);
++    ric_gen_id_t rid = {0};
++    bool has = false;
++    if(start_r != end_r){
++      ind_event_t* key = (ind_event_t*)assoc_rb_tree_key(&ag->ind_event.right, start_r);
++      rid = key->ric_id;
++      has = true;
++    }
++    pthread_mutex_unlock(&ag->mtx_ind_event);
++    if(!has) break;
++    if(stop_ind_event(ag, rid) != true) break; // 异常防死循环
++    reclaimed++;
++    if(reclaimed % 500 == 1)
++      printf("[E2-LEASE] reclaiming ind_events (%zu)...\n", reclaimed);
++  }
++  printf("[E2-LEASE] RIC 失联宽限 %ldms 到期 → 回收 %zu 条订阅（僵尸指示流归零）\n",
++         grace, reclaimed);
++  g_e2_ric_lost_us = 0; // 回收完成，回到初始态（等待 RIC 重连）
++  return reclaimed;
++}
+ 
+ static
+ bool check_valid_msg_type(e2_msg_type_t msg_type )
+@@ -177,6 +339,14 @@ e2ap_msg_t e2ap_handle_subscription_request_agent(e2_agent_t* ag, const e2ap_msg
+ 
+   printf("[E2 AGENT]: RIC_SUBSCRIPTION_REQUEST rx RAN_FUNC_ID %d RIC_REQ_ID %d\n", sr->ric_id.ran_func_id, sr->ric_id.ric_req_id);
+ 
++  // === [E2-GATE]/[E2-RATE]/[E2-LEASE] E2 侧强制（R1-C：闸门下沉 E2 节点）===
++  if(e2_enforce_gate(bi_map_size(&ag->ind_event)) == false){
++    e2ap_msg_t refuse = {.type = NONE_E2_MSG_TYPE};
++    return refuse; // 不建立订阅、不响应（最小 REFUSE 语义，标准 FAILURE 映射→R2）
++  }
++  struct timespec wcet_s0, wcet_s1;
++  clock_gettime(CLOCK_MONOTONIC, &wcet_s0);
++
+   sm_subs_data_t data = generate_sm_subs_data(sr);
+   uint16_t const ran_func_id = sr->ric_id.ran_func_id; 
+   sm_agent_t* sm = sm_plugin_ag(&ag->plugin, ran_func_id);
+@@ -209,8 +379,12 @@ e2ap_msg_t e2ap_handle_subscription_request_agent(e2_agent_t* ag, const e2ap_msg
+ 
+   printf("[E2-AGENT]: RIC_SUBSCRIPTION_REQUEST rx\n");
+ 
++  clock_gettime(CLOCK_MONOTONIC, &wcet_s1);
++  wcet_record_sub((wcet_s1.tv_sec - wcet_s0.tv_sec)*1000000LL
++                  + (wcet_s1.tv_nsec - wcet_s0.tv_nsec)/1000);
++
+   uint8_t const ric_act_id = sr->action[0].id;
+-  e2ap_msg_t ans = {.type = RIC_SUBSCRIPTION_RESPONSE, 
++  e2ap_msg_t ans = {.type = RIC_SUBSCRIPTION_RESPONSE,
+                     .u_msgs.ric_sub_resp = generate_subscription_response(&sr->ric_id, ric_act_id) };
+   return ans;
+ }
+@@ -331,6 +505,12 @@ e2ap_msg_t e2ap_handle_setup_response_agent(e2_agent_t* ag, const e2ap_msg_t* ms
+   assert(msg->type == E2_SETUP_RESPONSE);
+   printf("[E2-AGENT]: E2 SETUP RESPONSE rx\n");
+ 
++  // [E2-LEASE] R1-C：与 RIC 重连成功 → 清失联标记（恢复正常租约态）
++  if(g_e2_ric_lost_us != 0){
++    printf("[E2-LEASE] RIC reconnected; lease state reset\n");
++    g_e2_ric_lost_us = 0;
++  }
++
+   // Stop the timer
+   pending_event_t ev = SETUP_REQUEST_PENDING_EVENT;
+   stop_pending_event(ag,ev);
+diff --git a/src/lib/e2ap/v2_03/dec/e2ap_msg_dec_asn.c b/src/lib/e2ap/v2_03/dec/e2ap_msg_dec_asn.c
+index 76ef55f..1b50db5 100644
+--- a/src/lib/e2ap/v2_03/dec/e2ap_msg_dec_asn.c
++++ b/src/lib/e2ap/v2_03/dec/e2ap_msg_dec_asn.c
+@@ -469,7 +469,20 @@ e2ap_msg_t e2ap_dec_e42_subscription_request(const struct E2AP_PDU* pdu)
+ 
+   ric_subscription_request_t* sr = &e42_sr->sr;
+ 
+-  assert(out->protocolIEs.list.count == 5); 
++  /* [R3B/缺陷#7 修复] Release 构建 NDEBUG 下原 assert 失效：截断/畸形消息经
++   * asn_decode 部分成功（RC_OK+IE 数不足）后 array[1] 越界读→SIGSEGV
++   * （远程可触发，2 字节 {0x00,0x0f}+关联关闭 10/10 复现，gdb 栈 :482）。
++   * 改为真实守卫：IE 数不符→返回 NONE（事件循环跳过，优雅丢弃）。 */
++  if(out->protocolIEs.list.count != 5){
++    static long n7b = 0;
++    long tot = __sync_fetch_and_add(&n7b, 1) + 1;
++    if(tot % 2000 == 1)
++      printf("[DEC][PATCH7] E42 SubReq IE count=%d != 5（malformed/截断）累计=%ld\n",
++             (int)out->protocolIEs.list.count, tot);
++    e2ap_msg_t bad = {.type = NONE_E2_MSG_TYPE};
++    return bad;
++  }
++
+ 
+   // XAPP ID. Mandatory
+   E42RICsubscriptionRequest_IEs_t* xapp_id = out->protocolIEs.list.array[0];
+@@ -2535,6 +2548,17 @@ e2ap_msg_t e2ap_dec_e42_subscription_delete_request(const struct E2AP_PDU* pdu)
+ 
+   const E42RICsubscriptionDeleteRequest_t* out = &pdu->choice.initiatingMessage->value.choice.E42RICsubscriptionDeleteRequest;
+ 
++  /* [R3B/缺陷#7 修复] 同 E42 SubReq：IE 计数真实守卫（NDEBUG 下 assert 失效） */
++  if(out->protocolIEs.list.count != 3){
++    static long n7d = 0;
++    long tot = __sync_fetch_and_add(&n7d, 1) + 1;
++    if(tot % 2000 == 1)
++      printf("[DEC][PATCH7] E42 SubDel IE count=%d != 3（malformed/截断）累计=%ld\n",
++             (int)out->protocolIEs.list.count, tot);
++    e2ap_msg_t bad = {.type = NONE_E2_MSG_TYPE};
++    return bad;
++  }
++
+   // XAPP ID. Mandatory
+   E42RICsubscriptionDeleteRequest_IEs_t* xapp_id = out->protocolIEs.list.array[0];
+   assert(xapp_id->id == ProtocolIE_ID_id_XAPP_ID);
+@@ -2701,7 +2725,16 @@ E2AP_PDU_t* e2ap_create_pdu(const uint8_t* buffer, int buffer_len)
+   const asn_dec_rval_t rval = asn_decode(NULL, syntax, &asn_DEF_E2AP_PDU, (void**)&pdu, buffer, buffer_len);
+   //printf("rval.code = %d\n", rval.code);
+   //fprintf(stdout, "length of data %ld\n", rval.consumed);
+-  assert(rval.code == RC_OK && "Are you sending data in ATS_ALIGEND_BASIC_PER syntax?");
++  /* [R3B/缺陷#7 修复] NDEBUG 下原 assert 失效：解码失败时 pdu 半初始化
++   * （calloc 后 asn_decode 失败不清空）直达 get_msg_type/解引用。真实检查。 */
++  if(rval.code != RC_OK){
++    static long n7a = 0;
++    long tot = __sync_fetch_and_add(&n7a, 1) + 1;
++    if(tot % 2000 == 1)
++      printf("[DEC][PATCH7] E2AP PDU 解码失败（malformed/截断，code=%d）累计=%ld\n", (int)rval.code, tot);
++    ASN_STRUCT_FREE(asn_DEF_E2AP_PDU, pdu);
++    return NULL;
++  }
+ 
+   //xer_fprint(stdout, &asn_DEF_E2AP_PDU, pdu);
+   //fflush(stdout);
+@@ -2713,10 +2746,24 @@ e2ap_msg_t e2ap_msg_dec_asn(e2ap_asn_t* asn, byte_array_t ba)
+ {
+   assert(ba.buf != NULL && ba.len > 0);
+   E2AP_PDU_t* pdu = e2ap_create_pdu(ba.buf, ba.len);
+-  assert(pdu != NULL);
+-  const e2_msg_type_t msg_type = e2ap_get_msg_type(pdu);  
++  if(pdu == NULL){ /* [R3B/缺陷#7 修复] 解码失败→NONE（事件循环跳过） */
++    e2ap_msg_t bad = {.type = NONE_E2_MSG_TYPE};
++    return bad;
++  }
++  const e2_msg_type_t msg_type = e2ap_get_msg_type(pdu);
+   //printf("Decoding message type = %d \n", msg_type);
+-  assert(asn->dec_msg[msg_type] != NULL);
++  /* [R3B/缺陷#7 修复·补] NDEBUG 下 assert 失效：畸形 PDU 可得 NONE 或
++   * 本端未注册类型 → dec_msg[type]=NULL → 空函数指针调用 SIGSEGV。
++   * 终层守卫：无解码器→NONE（事件循环跳过）。 */
++  if(msg_type < 0 || msg_type >= NONE_E2_MSG_TYPE || asn->dec_msg[msg_type] == NULL){
++    static long n7c = 0;
++    long tot = __sync_fetch_and_add(&n7c, 1) + 1;
++    if(tot % 2000 == 1)
++      printf("[DEC][PATCH7] msg_type=%d 无解码器（malformed/未注册）累计=%ld\n", (int)msg_type, tot);
++    ASN_STRUCT_FREE(asn_DEF_E2AP_PDU, pdu);
++    e2ap_msg_t bad = {.type = NONE_E2_MSG_TYPE};
++    return bad;
++  }
+   e2ap_msg_t msg = asn->dec_msg[msg_type](pdu);
+ //  xer_fprint(stdout, &asn_DEF_E2AP_PDU, pdu);
+ //  fflush(stdout);
+diff --git a/src/lib/ep/e2ap_ep.c b/src/lib/ep/e2ap_ep.c
+index eab56af..3bbd673 100644
+--- a/src/lib/ep/e2ap_ep.c
++++ b/src/lib/ep/e2ap_ep.c
+@@ -54,12 +54,17 @@ void e2ap_ep_free(e2ap_ep_t* ep)
+ 
+ }
+ 
++/* === [R1F] 发送失败计数器（B-C2 offered-load 口径修复）===
++ * sctp_sendmsg 在对端流控关闭（rwnd=0）时阻塞直至 SO_SNDTIMEO；
++ * 超时/失败返回 -1 时计数，攻击器以 sent-fail 差值报告真实送达负载。 */
++long g_e2ap_snd_fail_cnt = 0;
++
+ void e2ap_send_sctp_msg(const e2ap_ep_t* ep, sctp_msg_t* msg)
+ {
+   assert(ep != NULL);
+   assert(msg->ba.buf && msg->ba.len > 0);
+ 
+-  struct sockaddr_in const* addr = &msg->info.addr; 
++  struct sockaddr_in const* addr = &msg->info.addr;
+   struct sctp_sndrcvinfo const* sri = &msg->info.sri;
+   byte_array_t const ba = msg->ba;
+ 
+@@ -70,7 +75,9 @@ void e2ap_send_sctp_msg(const e2ap_ep_t* ep, sctp_msg_t* msg)
+       sri->sinfo_ppid, sri->sinfo_flags, sri->sinfo_stream, 0, 0);
+   assert(rc != 0);
+   if(rc == -1){
+-    printf("Error sending sctp message \n");
++    __sync_fetch_and_add(&g_e2ap_snd_fail_cnt, 1);
++    printf("[SND-FAIL] sctp_sendmsg failed (flow-control drop?) 累计=%ld errno=%d\n",
++           g_e2ap_snd_fail_cnt, errno);
+   }
+ }
+ 
+diff --git a/src/ric/iApp/CMakeLists.txt b/src/ric/iApp/CMakeLists.txt
+index 35b36ca..a4ce588 100644
+--- a/src/ric/iApp/CMakeLists.txt
++++ b/src/ric/iApp/CMakeLists.txt
+@@ -18,6 +18,7 @@ set(E2_IAPP_SRC
+             map_ric_id.c
+             map_xapps_sockaddr.c
+             xapp_ric_id.c
++            arb_maxweight.c
+             $<TARGET_OBJECTS:e2ap_ap_obj>
+             $<TARGET_OBJECTS:e2ap_ep_obj>
+             $<TARGET_OBJECTS:msg_hand_obj> 
+diff --git a/src/ric/iApp/e42_iapp.c b/src/ric/iApp/e42_iapp.c
+index 0aecd16..283eada 100644
+--- a/src/ric/iApp/e42_iapp.c
++++ b/src/ric/iApp/e42_iapp.c
+@@ -15,9 +15,180 @@
+ #include "../../lib/async_event.h"
+ #include "../../lib/ep/sctp_msg.h"
+ #include "../../util/time_now_us.h"
++#include "../../util/alg_ds/ds/assoc_container/bimap.h"
+ 
+ #include <stdio.h>
+ #include <pthread.h>
++#include <stdlib.h>
++
++/* === [L1] R1-G 预解码语义准入（XDP 式"最早点处理"迁移，方案一）===
++ *
++ * 位置：E42 服务器事件循环，e2ap_msg_dec_iapp（完整 ASN.1 UPER 解码）之前。
++ * 原理：E42AP-PDU 的 UPER 头部前 2 字节即编码 PDU 选择支+procedureCode
++ *   （e42_templates.h 三模板实证：byte[1]=0x0e SetupRequest / 0x0f
++ *   SubscriptionRequest / 0x10 SubscriptionDeleteRequest），分类 O(1)。
++ * 强制：订阅/删除类操作按 per-association（sinfo_assoc_id）双令牌桶
++ *   (σ=FLEXRIC_L1_SIGMA, ρ=FLEXRIC_L1_RHO) + 并发存量 CAP（FLEXRIC_L1_CAP）
++ *   判定；违规静默丢弃——不解码、不转发 E2、不建 pending、不回包。
++ * 语义：贪心整形器（greedy shaper）——输出到达曲线由 (σ,ρ) 决定，
++ *   与攻击者 offered load 强度无关（网络演算定理 1 的部署形态）。
++ * 良性零误伤：SetupRequest 永不上闸；良性 xApp 为独立关联、操作数远小于 σ。
++ * 默认 FLEXRIC_L1 未设置时完全旁路（零行为变化）。 */
++typedef struct{
++  sctp_assoc_t assoc;
++  int64_t tokens_fp;   /* 固定点令牌 ×1000 */
++  int64_t last_us;
++  long subs_active;    /* 近似并发存量 = 放行订阅数 - 放行删除数（下限 0） */
++  long passed;
++  long dropped;
++} l1_state_t;
++
++#define L1_MAX_ASSOC 32
++static l1_state_t g_l1[L1_MAX_ASSOC];
++static long g_l1_rho = -1, g_l1_sigma = -1, g_l1_cap = -1;
++static long g_l1_total_dropped = 0;
++static long g_l1_fullpol = 0;    /* 0=pass 1=reject 2=lru */
++static void* NULL_FULL_REJECT = (void*)1; /* 满表拒绝哨兵（区别于 pass 的 NULL） */
++
++static
++l1_state_t* l1_slot(sctp_assoc_t assoc)
++{
++  for(int i = 0; i < L1_MAX_ASSOC; ++i)
++    if(g_l1[i].assoc == assoc) return &g_l1[i];
++  for(int i = 0; i < L1_MAX_ASSOC; ++i){
++    if(g_l1[i].assoc == 0){
++      g_l1[i].assoc = assoc;
++      g_l1[i].tokens_fp = g_l1_sigma * 1000;
++      g_l1[i].last_us = time_now_us();
++      g_l1[i].subs_active = 0;
++      return &g_l1[i];
++    }
++  }
++  /* [B11] 满表策略三臂：FLEXRIC_L1_FULLPOLICY={pass,reject,lru}
++   * pass=历史保守放行（B2-M1 绕过①：>32 关联全绕过）；reject=有界表 fail-closed
++   * （拒绝该消息——A·γ 聚合界的 A=表容量语义）；lru=驱逐最旧 slot 复用（活性近似）。
++   * 默认 pass 保持历史行为供对照。 */
++  {
++    static long fullpol = -1;
++    if(fullpol == -1){
++      const char* e = getenv("FLEXRIC_L1_FULLPOLICY");
++      fullpol = 0; /* pass */
++      if(e != NULL){
++        if(e[0] == 'r' || e[0] == '1') fullpol = 1;      /* reject */
++        else if(e[0] == 'l' || e[0] == '2') fullpol = 2; /* lru */
++      }
++    }
++    g_l1_fullpol = fullpol;
++    if(fullpol == 1) return NULL_FULL_REJECT;
++    if(fullpol == 2){
++      int victim = 0;
++      for(int i = 1; i < L1_MAX_ASSOC; ++i)
++        if(g_l1[i].last_us < g_l1[victim].last_us) victim = i;
++      g_l1[victim].assoc = assoc;
++      g_l1[victim].tokens_fp = g_l1_sigma * 1000;
++      g_l1[victim].last_us = time_now_us();
++      g_l1[victim].subs_active = 0;
++      return &g_l1[victim];
++    }
++  }
++  return NULL; /* 超出关联表容量：保守放行（不惩罚良性）——历史行为 */
++}
++
++/* 返回 true=放行（走完整解码路径），false=预解码丢弃 */
++static
++bool l1_prefilter(const sctp_msg_t* m)
++{
++  if(g_l1_rho == -1){
++    const char* e1 = getenv("FLEXRIC_L1");
++    const char* e2 = getenv("FLEXRIC_L1_RHO");
++    const char* e3 = getenv("FLEXRIC_L1_SIGMA");
++    const char* e4 = getenv("FLEXRIC_L1_CAP");
++    long on = (e1 != NULL) ? atol(e1) : 0;
++    g_l1_rho   = (on && e2 != NULL) ? atol(e2) : 100;
++    g_l1_sigma = (on && e3 != NULL) ? atol(e3) : 64;
++    g_l1_cap   = (on && e4 != NULL) ? atol(e4) : 64;
++    if(on)
++      printf("[L1] 预解码准入启用 rho=%ld/s sigma=%ld cap=%ld（贪心整形器语义）\n",
++             g_l1_rho, g_l1_sigma, g_l1_cap);
++    else
++      g_l1_rho = 0; /* off */
++  }
++  if(g_l1_rho == 0) return true; /* 未启用：旁路 */
++  if(m->type != SCTP_MSG_PAYLOAD || m->ba.len < 2) return true;
++
++  /* UPER 头分类：byte[0]=0x00（initiatingMessage 选择支，两 bit 对齐后），
++   * byte[1]=procedureCode。非三类订阅操作消息一律放行（保守）。 */
++  const uint8_t pc = m->ba.buf[1];
++  /* [B11] fail-closed：FLEXRIC_L1_FAILCLOSED=1 时未知 procedureCode（malformed
++   * 字节洪泛，B2-M1 绕过②/37229 实锤）默认拒绝；白名单=已知合法 E42AP 消息集。
++   * 默认 off=历史保守放行。 */
++  static long failclosed = -1;
++  if(failclosed == -1){
++    const char* e = getenv("FLEXRIC_L1_FAILCLOSED");
++    failclosed = (e != NULL && e[0] == '1') ? 1 : 0;
++  }
++  static const int pc_known[256] = {
++    [0x02]=1,[0x03]=1,[0x04]=1,[0x05]=1,[0x07]=1,[0x09]=1,[0x0a]=1,[0x0b]=1,
++    [0x0c]=1,[0x0d]=1,[0x0e]=1,[0x0f]=1,[0x10]=1,[0x11]=1,[0x12]=1,[0x1a]=1,[0x1b]=1,
++  };
++  if(failclosed && !pc_known[pc]){
++    long tot = __sync_fetch_and_add(&g_l1_total_dropped, 1) + 1;
++    if(tot % 2000 == 1)
++      printf("[L1] malformed procedureCode 0x%02x 预解码丢弃（fail-closed）累计=%ld\n",
++             pc, tot);
++    return false;
++  }
++  /* [R3B/缺陷#7 配套] 长度下限：FLEXRIC_L1_MINLEN>0 时短帧（截断变体：
++   * pc 白名单内但 body 不足）预解码丢弃——解码器守卫之前的更早防线。
++   * 合法 E42AP 帧数十字节，8-16 字节下限对良性零影响。默认 0=off。 */
++  {
++    static long minlen = -1;
++    if(minlen == -1){
++      const char* e = getenv("FLEXRIC_L1_MINLEN");
++      minlen = (e != NULL) ? atol(e) : 0;
++    }
++    if(minlen > 0 && (long)m->ba.len < minlen){
++      long tot = __sync_fetch_and_add(&g_l1_total_dropped, 1) + 1;
++      if(tot % 2000 == 1)
++        printf("[L1] 短帧 len=%zu < %ld 预解码丢弃（minlen，截断变体）累计=%ld\n",
++               m->ba.len, minlen, tot);
++      return false;
++    }
++  }
++  if(pc == 0x0f || pc == 0x10){
++    l1_state_t* s = l1_slot(m->info.sri.sinfo_assoc_id);
++    if(s == NULL_FULL_REJECT){
++      long tot = __sync_fetch_and_add(&g_l1_total_dropped, 1) + 1;
++      if(tot % 2000 == 1)
++        printf("[L1] 关联表满（%d slots）拒绝——有界表 fail-closed 累计=%ld\n",
++               L1_MAX_ASSOC, tot);
++      return false;
++    }
++    if(s == NULL) return true;
++    int64_t now = time_now_us();
++    int64_t dt = now - s->last_us;
++    if(dt > 0){ /* 补充令牌：tokens += rho * dt/1e6（固定点×1000） */
++      s->tokens_fp += g_l1_rho * dt / 1000;
++      if(s->tokens_fp > g_l1_sigma * 1000) s->tokens_fp = g_l1_sigma * 1000;
++      s->last_us = now;
++    }
++    bool ok = (s->tokens_fp >= 1000);
++    if(ok && pc == 0x0f && s->subs_active >= g_l1_cap) ok = false;
++    if(ok){
++      s->tokens_fp -= 1000;
++      if(pc == 0x0f) s->subs_active++; else if(s->subs_active > 0) s->subs_active--;
++      s->passed++;
++    } else {
++      s->dropped++;
++      long tot = __sync_fetch_and_add(&g_l1_total_dropped, 1) + 1;
++      if(tot % 2000 == 1)
++        printf("[L1] assoc %d 预解码丢弃（桶/cap 违规）累计=%ld\n",
++               (int)m->info.sri.sinfo_assoc_id, tot);
++      return false;
++    }
++  }
++  return true;
++}
+ 
+ e42_iapp_t* init_e42_iapp(const char* addr, near_ric_if_t ric_if)
+ {
+@@ -80,10 +251,19 @@ bool net_pkt(const e42_iapp_t* iapp, int fd)
+ static
+ void consume_fd(int fd)
+ {
+-  assert(fd > 0);
++  /* [R1G] 防崩补丁：断连清理风暴下 pending 表项与 fd 生命周期存在竞态，
++   * 原 assert(fd>0) 使 RIC 在攻击者 kill -9 后的删除风暴窗口崩溃
++   * （R1B r10/r100 档死亡的直接根因，near_ric.c 同名函数同修）。
++   * 改为防御性跳过：无效 fd 不再致命。 */
++  if(fd <= 0){
++    printf("[iApp][PATCH] consume_fd 无效 fd=%d，跳过（防断连竞态崩溃）\n", fd);
++    return;
++  }
+   uint64_t read_buf = 0;
+   ssize_t const bytes = read(fd,&read_buf, sizeof(read_buf));
+-  assert(bytes == sizeof(read_buf));
++  if(bytes != (ssize_t)sizeof(read_buf)){
++    printf("[iApp][PATCH] consume_fd 短读 %zd，跳过\n", bytes);
++  }
+ }
+ 
+ static inline
+@@ -126,8 +306,14 @@ async_event_t next_async_event_iapp(e42_iapp_t* iapp)
+     e.msg = e2ap_recv_msg_iapp(&iapp->ep);
+     if(e.msg.type == SCTP_MSG_NOTIFICATION){
+       if(e.msg.notif->sn_header.sn_type == SCTP_ASSOC_CHANGE){
+-        printf(" SCTP_ASSOC_CHANGE recived \n" );
+-        e.type = UNKNOWN_EVENT;
++        /* smoke test修复：COMM_LOST / SHUTDOWN_COMP 视为断连，其余(如 COMM_UP)吞掉 */
++        if(e.msg.notif->sn_assoc_change.sac_state == SCTP_COMM_LOST ||
++           e.msg.notif->sn_assoc_change.sac_state == SCTP_SHUTDOWN_COMP){
++          printf("[NEAR-RIC]: SCTP_COMM_LOST/SHUTDOWN_COMP sac_state=%d\n", e.msg.notif->sn_assoc_change.sac_state);
++          e.type = SCTP_CONNECTION_SHUTDOWN_EVENT;
++        } else {
++          e.type = CHECK_STOP_TOKEN_EVENT; // no-op 吞掉无害通知
++        }
+         return e;
+       } 
+       e.type = SCTP_CONNECTION_SHUTDOWN_EVENT;
+@@ -198,9 +384,20 @@ void e2_event_loop_iapp(e42_iapp_t* iapp)
+         {
+           defer({free_sctp_msg(&e.msg);});
+ 
++          /* === [L1] 预解码准入：完整 ASN.1 解码之前的最早点强制 === */
++          if(l1_prefilter(&e.msg) == false){
++            break; /* 静默丢弃：不解码、不转发、不回包 */
++          }
++
+           e2ap_msg_t msg = e2ap_msg_dec_iapp(&iapp->ap, e.msg.ba);
+           defer( { e2ap_msg_free_iapp(&iapp->ap, &msg);} );
+ 
++          /* [R3B/缺陷#7 修复] 解码失败（malformed/截断）→NONE：跳过分发
++           * （NDEBUG 下 handle_msg[NONE]=NULL 的解引用防御） */
++          if(msg.type == NONE_E2_MSG_TYPE){
++            break;
++          }
++
+           e2ap_msg_t ans = e2ap_msg_handle_iapp(iapp, &msg);
+           defer( { e2ap_msg_free_iapp(&iapp->ap, &ans);} );
+ 
+@@ -234,16 +431,67 @@ void e2_event_loop_iapp(e42_iapp_t* iapp)
+           consume_fd(e.fd);
+           break;
+         }
+-      case SCTP_CONNECTION_SHUTDOWN_EVENT: 
++      case SCTP_CONNECTION_SHUTDOWN_EVENT:
+         {
+           defer({free_sctp_msg(&e.msg);});
+-          uint16_t const xapp_id = find_map_xapps_xid(&iapp->ep.xapps, &e.msg.info);
++          /* [R1-A 修复] 未注册关联（无 E42 SETUP 的裸 SCTP 连接）断开 → 安全跳过。
++             原 find_map_xapps_xid 在此 assert 崩溃：裸 connect+close 即可杀死 RIC。 */
++          xapp_xid_opt_t const xo = find_map_xapps_xid_safe(&iapp->ep.xapps, &e.msg.info);
++          if(xo.has_value == false){
++            printf("[NEAR-RIC]: unregistered SCTP association closed (no E42 SETUP) — skip\n");
++            break;
++          }
++          uint16_t const xapp_id = xo.xapp_id;
+           printf("[NEAR-RIC]: xApp %d disconnected!\n", xapp_id);
+-          rm_if_pending_subs(iapp, xapp_id);
++          /* smoke test修复：回收即删表（租约语义最小版）——不等 delete response，
++             直接从 map_ric_id 移除该 xApp 全部订阅条目，封死陈旧状态 */
++          {
++            /* [LEASE] 断连即回收（租约语义最小版，完整版）：
++               1) 拷贝该 xApp 全部订阅（含 e2_node_id，发南向 delete 需要）
++               2) 删表：按 req_id 重查真实 key 删除（单线程事件循环内安全，
++                  delete-response 稍后到达时 find miss 安全跳过）
++               3) 向 E2 agent 发 delete request 回收南向订阅——否则 agent 侧
++                  僵尸订阅持续以指示流反灌 RIC（E2 端协同回收的必要性实证） */
++            seq_arr_t arr = find_all_subs_map_ric_id(&iapp->map_ric_id, xapp_id);
++            size_t n = seq_size(&arr);
++            if(n > 0){
++              size_t removed = 0;
++              void* it = seq_front(&arr);
++              while(it != seq_end(&arr)){
++                e2_node_ric_id_t* k = (e2_node_ric_id_t*)it;
++                uint16_t req_id = k->ric_id.ric_req_id;
++                xapp_ric_id_xpct_t xp = find_xapp_map_ric_id(&iapp->map_ric_id, req_id);
++                if(xp.has_value == true){
++                  rm_map_ric_id(&iapp->map_ric_id, &xp.xapp_ric_id);
++                  removed++;
++                }
++                it = seq_next(&arr, it);
++              }
++              void* f = seq_front(&arr);
++              void* l = seq_end(&arr);
++              void* data = iapp;
++              for_each_arr(&arr, f, l, gen_e2ap_subs_delete, data);
++              if(removed > 0)
++                printf("[LEASE] xApp %u 回收：删表 %zu 条 + E2 侧 delete %zu 条\n", xapp_id, removed, n);
++            }
++            seq_arr_free(&arr, free_e2_node_ric_id_wrapper);
++          }
+           break;
+         }
+       case CHECK_STOP_TOKEN_EVENT:
+         {
++          // === smoke test注入：周期性订阅状态表 dump（候选2 观察点）===
++          static int64_t last_dump_us = 0;
++          int64_t now_us = time_now_us();
++          if(now_us - last_dump_us > 1000000){ // 每 ~1s
++            last_dump_us = now_us;
++            int rc_l = pthread_rwlock_rdlock(&iapp->map_ric_id.rw);
++            assert(rc_l == 0);
++            size_t total = bi_map_size(&iapp->map_ric_id.bimap);
++            rc_l = pthread_rwlock_unlock(&iapp->map_ric_id.rw);
++            assert(rc_l == 0);
++            printf("[STATE] t=%.1fs map_ric_id 订阅条目总数=%zu\n", now_us/1e6, total);
++          }
+ /*       
+        socklen_t opt_len = sizeof(struct sctp_status);
+        struct sctp_status status = {0};
+diff --git a/src/ric/iApp/endpoint_iapp.c b/src/ric/iApp/endpoint_iapp.c
+index 57f833b..3e6e3c3 100644
+--- a/src/ric/iApp/endpoint_iapp.c
++++ b/src/ric/iApp/endpoint_iapp.c
+@@ -65,11 +65,9 @@ int init_sctp_conn_server(const char* addr, int port)
+   assert(rc != -1);
+ 
+   struct sctp_event_subscribe evnts = {.sctp_data_io_event = 1, 
+-                                       /*.sctp_shutdown_event = 1,*/ 
+-                                       .sctp_send_failure_event = 1
+-                                       /*.sctp_association_event = 1*/
+-                                       /*.sctp_peer_error_event = 1,
+-                                       */ };
++                                       .sctp_shutdown_event = 1,  /* smoke test修复：启用断连通知 */
++                                       .sctp_send_failure_event = 1,
++                                       .sctp_association_event = 1 /* smoke test修复：COMM_LOST */ };
+ 
+   rc = setsockopt (server_fd, IPPROTO_SCTP, SCTP_EVENTS, &evnts, sizeof (evnts));
+   assert(rc != -1);
+diff --git a/src/ric/iApp/map_ric_id.c b/src/ric/iApp/map_ric_id.c
+index 3d9fee5..c13272a 100644
+--- a/src/ric/iApp/map_ric_id.c
++++ b/src/ric/iApp/map_ric_id.c
+@@ -19,6 +19,7 @@
+  *      contact@openairinterface.org
+  */
+ 
++#include <stdlib.h>
+ #include "../../util/alg_ds/alg/alg.h"
+ #include "../../util/alg_ds/ds/lock_guard/lock_guard.h"
+ #include "map_ric_id.h"
+@@ -145,7 +146,27 @@ void add_map_ric_id(map_ric_id_t* map, e2_node_ric_id_t* node, xapp_ric_id_t* x)
+   void* it = assoc_front(left);
+   void* end = assoc_end(left);
+   it = find_if(left, it, end, node, eq_e2_node_ric_req);
+-  assert(it == end && "ric_req_id already in the map");
++  /* [R2-A 补丁⑤-C 碰撞防崩] near_ric.c req_id 分配器 uint16 单调回绕无占用检查
++   * （near_ric.c:256 起 1021，65400 条/20s 攻击即回绕）——回绕段命中存活条目时
++   * 原 assert 打崩整个 RIC。find-or-skip：命中打印 [MAP-COLLISION] 并拒绝插入
++   * （有界表语义：等价于该订阅被拒，良性既存订阅不受影响）。
++   * 开关 FLEXRIC_MAP_COLLISION_SAFE（默认 off 保持上游行为供对照）。 */
++  if(it != end){
++    static int safe = -1;
++    if(safe == -1){
++      const char* e = getenv("FLEXRIC_MAP_COLLISION_SAFE");
++      safe = (e != NULL && e[0] == '1') ? 1 : 0;
++    }
++    if(safe){
++      static long coll = 0;
++      coll++;
++      if(coll % 100 == 1)
++        printf("[MAP-COLLISION] ric_req_id %u 已占用——拒绝插入（累计 %ld）\n",
++               node->ric_id.ric_req_id, coll);
++      return;
++    }
++    assert(it == end && "ric_req_id already in the map");
++  }
+ 
+   bi_map_insert(&map->bimap, node, sizeof(e2_node_ric_id_t), x, sizeof(xapp_ric_id_t));
+ }
+@@ -234,7 +255,34 @@ e2_node_ric_id_t find_ric_req_map_ric_id(map_ric_id_t* map, xapp_ric_id_t* x)
+   return id;
+ }
+ 
+-// array of e2_node_ric_id_t 
++/* [R1G] 防崩补丁：churn 攻击下过期 DELETE 携带已回收/从未建立的 (xapp_id, ric_id)
++ * 查映射失败时原实现 assert 崩溃（R1B churn 死因家族之二，与 fd>0 竞态并列）。
++ * find-or-none 变体供删除路径优雅跳过。 */
++bool find_ric_req_map_ric_id_opt(map_ric_id_t* map, xapp_ric_id_t* x,
++                                 e2_node_ric_id_t* out)
++{
++  assert(map != NULL);
++  assert(out != NULL);
++
++  int rc = pthread_rwlock_rdlock(&map->rw);
++  assert(rc == 0);
++
++  assoc_rb_tree_t* r = &map->bimap.right;
++
++  void* it = assoc_front(r);
++  void* end = assoc_end(r);
++  it = find_if(r , it, end, x , eq_xapp_ric_gen_id_wrapper);
++  bool found = (it != end);
++  if(found)
++    *out = *(e2_node_ric_id_t*)assoc_value(r, it);
++
++  rc = pthread_rwlock_unlock(&map->rw);
++  assert(rc == 0);
++
++  return found;
++}
++
++// array of e2_node_ric_id_t
+ seq_arr_t find_all_subs_map_ric_id(map_ric_id_t* map, uint16_t xapp_id)
+ {
+   assert(map != NULL);
+diff --git a/src/ric/iApp/map_ric_id.h b/src/ric/iApp/map_ric_id.h
+index f1bfeb5..af5ac1b 100644
+--- a/src/ric/iApp/map_ric_id.h
++++ b/src/ric/iApp/map_ric_id.h
+@@ -20,6 +20,7 @@
+  */
+ 
+ #ifndef MAP_RIC_ID_H
++#include <stdbool.h>
+ #define MAP_RIC_ID_H 
+ 
+ #include "../../util/alg_ds/ds/assoc_container/assoc_generic.h"
+@@ -54,6 +55,10 @@ xapp_ric_id_xpct_t find_xapp_map_ric_id(map_ric_id_t* map, uint16_t ric_req_id);
+ 
+ e2_node_ric_id_t find_ric_req_map_ric_id(map_ric_id_t* map, xapp_ric_id_t* x);
+ 
++// [R1G] find-or-none 变体（删除路径防崩）
++bool find_ric_req_map_ric_id_opt(map_ric_id_t* map, xapp_ric_id_t* x,
++                                 e2_node_ric_id_t* out);
++
+ // array of e2_node_ric_id_t 
+ seq_arr_t find_all_subs_map_ric_id(map_ric_id_t* map, uint16_t xapp_id); 
+ 
+diff --git a/src/ric/iApp/map_xapps_sockaddr.c b/src/ric/iApp/map_xapps_sockaddr.c
+index 32faf12..ac43a93 100644
+--- a/src/ric/iApp/map_xapps_sockaddr.c
++++ b/src/ric/iApp/map_xapps_sockaddr.c
+@@ -217,12 +217,47 @@ uint16_t find_map_xapps_xid(map_xapps_sockaddr_t* m, sctp_info_t const* s)
+   it = find_if(tree, it, end, s, eq_sctp_info_wrapper);
+   assert(it != end && "SCTP info not found in the tree");
+ 
+-  uint16_t xapp_id = *(uint16_t*)assoc_value(tree, it);  
++  uint16_t xapp_id = *(uint16_t*)assoc_value(tree, it);
+ 
+-  rc = pthread_rwlock_unlock(&m->rw); 
++  rc = pthread_rwlock_unlock(&m->rw);
+   assert(rc == 0);
+ 
+   return xapp_id;
+ }
+ 
++/* [R1-A 修复] 安全版：未注册关联（未完成 E42 SETUP 的 SCTP 连接）返回 has_value=false。
++ * 背景：R1-A 异步攻击器开发中实证——裸 SCTP connect+close（无任何 E42 消息）即触发
++ * find_map_xapps_xid 的 assert 崩溃（SHUTDOWN 通知到达时该关联不在 xapps 表中）。
++ * 攻击面发现：未认证 SCTP 连接 churn 可使 nearRT-RIC 崩溃——E42 接入层零准入的又一实证。 */
++xapp_xid_opt_t find_map_xapps_xid_safe(map_xapps_sockaddr_t* m, sctp_info_t const* s)
++{
++  assert(m != NULL);
++  assert(s != NULL);
++
++  xapp_xid_opt_t dst = {.has_value = false, .xapp_id = 0};
++
++  int rc = pthread_rwlock_rdlock(&m->rw);
++  assert(rc == 0);
++
++  assoc_rb_tree_t* tree = &m->bimap.right;
++
++  void* it = assoc_front(tree);
++  void* end = assoc_end(tree);
++
++  it = find_if(tree, it, end, s, eq_sctp_info_wrapper);
++  if(it == end){
++    rc = pthread_rwlock_unlock(&m->rw);
++    assert(rc == 0);
++    return dst; // 未注册关联：安全跳过（不 crash）
++  }
++
++  dst.has_value = true;
++  dst.xapp_id = *(uint16_t*)assoc_value(tree, it);
++
++  rc = pthread_rwlock_unlock(&m->rw);
++  assert(rc == 0);
++
++  return dst;
++}
++
+ 
+diff --git a/src/ric/iApp/map_xapps_sockaddr.h b/src/ric/iApp/map_xapps_sockaddr.h
+index 71af13d..82709da 100644
+--- a/src/ric/iApp/map_xapps_sockaddr.h
++++ b/src/ric/iApp/map_xapps_sockaddr.h
+@@ -53,6 +53,16 @@ sctp_info_t find_map_xapps_sad(map_xapps_sockaddr_t* m, uint16_t xapp_id);
+ 
+ uint16_t find_map_xapps_xid(map_xapps_sockaddr_t* m, sctp_info_t const* s);
+ 
++/* [R1-A 修复] 安全版：未注册关联不 assert 崩溃（find miss → has_value=false） */
++typedef struct{
++  bool has_value;
++  uint16_t xapp_id;
++} xapp_xid_opt_t;
++
++#include <stdbool.h>
++
++xapp_xid_opt_t find_map_xapps_xid_safe(map_xapps_sockaddr_t* m, sctp_info_t const* s);
++
+ #endif
+ 
+ 
+diff --git a/src/ric/iApp/msg_handler_iapp.c b/src/ric/iApp/msg_handler_iapp.c
+index 30adcad..7cd8072 100644
+--- a/src/ric/iApp/msg_handler_iapp.c
++++ b/src/ric/iApp/msg_handler_iapp.c
+@@ -22,6 +22,7 @@ a* You may obtain a copy of the License at
+ 
+ 
+ #include "../../xApp/e42_xapp_api.h"
++#include "arb_maxweight.h"
+ #include "e42_iapp_api.h"
+ #include "msg_handler_iapp.h"
+ #include "lib/pending_events.h"
+@@ -32,8 +33,10 @@ a* You may obtain a copy of the License at
+ 
+ #include "iapp_if_generic.h"
+ #include "xapp_ric_id.h"
++#include "e2_node_ric_id.h"
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ 
+ 
+ 
+@@ -92,7 +95,15 @@ e2ap_msg_t e2ap_handle_subscription_response_iapp(e42_iapp_t* iapp, const e2ap_m
+   ric_subscription_response_t const* src = &msg->u_msgs.ric_sub_resp; 
+ 
+   xapp_ric_id_xpct_t const xpctd = find_xapp_map_ric_id(&iapp->map_ric_id, src->ric_id.ric_req_id);
+-  assert(xpctd.has_value == true && "RIC Req Id not found!"); 
++  /* [R1G] 防崩补丁④：churn 负载下 SUBSCRIPTION RESPONSE 可能晚于对应 DELETE 到达
++   * （R1G churn_none 实测死因），映射已删→优雅丢弃（与 delete_response/indication
++   * 处理器的既有 graceful 模式对齐——原 assert 是不一致实现）。 */
++  if(xpctd.has_value == false){
++    printf("[iApp]: SUBSCRIPTION RESPONSE rx RIC REQ ID %d but no xApp associated (stale, dropped)\n",
++           src->ric_id.ric_req_id);
++    e2ap_msg_t none = {.type = NONE_E2_MSG_TYPE};
++    return none;
++  }
+   xapp_ric_id_t const x = xpctd.xapp_ric_id; 
+ 
+   assert(src->ric_id.ran_func_id == x.ric_id.ran_func_id);
+@@ -276,6 +287,63 @@ e2ap_msg_t e2ap_handle_ric_indication_iapp(e42_iapp_t* iapp, const e2ap_msg_t* m
+   return none;
+ }
+ 
++// === [RATE] smoke test R1（第2轮）：每 xApp 订阅操作速率上界（三上界之"速率"维最小版）===
++// 动机：辩论伤口——朴素计数 CAP 挡不住"间歇性建删循环攻击"（稳态活跃数 < CAP 但
++// 建删操作速率无界）。本补丁验证速率上界对该攻击类的增量防护。
++// 环境变量 FLEXRIC_RATE_CAP：每 xApp 每 1s 滑动窗口允许的 SUBSCRIBE+DELETE 操作数；
++// 未设置或 0 = off（baseline）。
++#define RATE_WIN_US   (1000000L)  // 1s 滑动窗口
++#define RATE_DEPTH    4096        // 每 slot 最多记录 4096 个时间戳
++#define RATE_SLOTS    1024        // xapp_id % RATE_SLOTS
++typedef struct {
++  int64_t ts[RATE_DEPTH];
++  int head;
++  long refused;   // 累计拒绝数（观测用）
++} rate_win_t;
++static rate_win_t g_rate[RATE_SLOTS];
++static pthread_mutex_t g_rate_mtx = PTHREAD_MUTEX_INITIALIZER;
++
++static bool rate_gate_check_and_record(uint32_t xapp_id)
++{
++  static long rate_cap = -1;
++  if(rate_cap == -1){
++    const char* env = getenv("FLEXRIC_RATE_CAP");
++    rate_cap = (env != NULL) ? atol(env) : 0;
++    printf("[RATE] FLEXRIC_RATE_CAP=%ld ops/s (0=off)\n", rate_cap);
++  }
++  if(rate_cap <= 0)
++    return true;  // off
++
++  const int64_t now = time_now_us();
++  rate_win_t* w = &g_rate[xapp_id % RATE_SLOTS];
++  pthread_mutex_lock(&g_rate_mtx);
++  // 统计窗口内存活时间戳（顺带把窗口外的清零，实现滑动窗口）
++  int cnt = 0;
++  for(int i = 0; i < RATE_DEPTH; ++i){
++    if(w->ts[i] != 0){
++      if(now - w->ts[i] > RATE_WIN_US){
++        w->ts[i] = 0;            // 出窗，淘汰
++      } else {
++        cnt++;
++      }
++    }
++  }
++  if(cnt >= rate_cap){
++    w->refused++;
++    if((w->refused % 500) == 1)
++      printf("[RATE] xApp %u 窗口内 ops=%d >= CAP=%ld → REFUSE (累计 %ld)\n",
++             xapp_id, cnt, rate_cap, w->refused);
++    pthread_mutex_unlock(&g_rate_mtx);
++    return false;   // REFUSE：不转发 E2、不入表
++  }
++  // 记录本次操作
++  while(w->ts[w->head] != 0){ w->ts[w->head] = 0; w->head = (w->head + 1) % RATE_DEPTH; } // 找空位（窗口未满时必有）
++  w->ts[w->head] = now;
++  w->head = (w->head + 1) % RATE_DEPTH;
++  pthread_mutex_unlock(&g_rate_mtx);
++  return true;
++}
++
+ static
+ bool valid_xapp_id(e42_iapp_t* iapp, uint32_t xapp_id)
+ {
+@@ -312,17 +380,35 @@ e2ap_msg_t e2ap_handle_e42_ric_subscription_delete_request_iapp(e42_iapp_t* iapp
+ 
+   const e42_ric_subscription_delete_request_t* src = &msg->u_msgs.e42_ric_sub_del_req;
+ 
++  // === [RATE] 速率上界同样覆盖 DELETE 路径（建删循环攻击的两半）===
++  if(rate_gate_check_and_record(src->xapp_id) == false){
++      printf("[RATE] xApp %u DELETE 亦被速率闸门拒绝\n", src->xapp_id);
++      e2ap_msg_t refuse = {.type = NONE_E2_MSG_TYPE};
++      return refuse;
++  }
++
+   xapp_ric_id_t x = { .ric_id = src->sdr.ric_id,
+                       .xapp_id = src->xapp_id 
+                     };
+ 
+-  e2_node_ric_id_t n = find_ric_req_map_ric_id(&iapp->map_ric_id, &x);
++  /* [R1G] 防崩补丁：churn 过期 DELETE 查不到映射→优雅跳过（原 assert 崩溃，
++   * R1B churn 死因家族之二）。计数打印供指标提取。 */
++  static long stale_del_cnt = 0;
++  e2_node_ric_id_t n = {0};
++  if(find_ric_req_map_ric_id_opt(&iapp->map_ric_id, &x, &n) == false){
++    stale_del_cnt++;
++    if(stale_del_cnt % 500 == 1)
++      printf("[iApp][PATCH] 过期 DELETE（映射不存在）忽略 累计=%ld\n", stale_del_cnt);
++    e2ap_msg_t skip = {.type = NONE_E2_MSG_TYPE};
++    return skip;
++  }
+   assert(n.ric_req_type == SUBSCRIPTION_RIC_REQUEST_TYPE);
+ 
+   ric_subscription_delete_request_t dst = cp_ric_subscription_delete_request(&src->sdr);
+   dst.ric_id.ric_req_id = n.ric_id.ric_req_id;
+ 
+   fwd_ric_subscription_request_delete_gen(iapp->ric_if.type, &n.e2_node_id, &dst, notify_msg_iapp_api);
++  arb_release(src->xapp_id); // [ARB] 归还全局容量（删除闭环）
+ 
+   printf("[iApp]: RIC_SUBSCRIPTION_DELETE_REQUEST tx RIC_REQ_ID %d \n",n.ric_id.ric_req_id);
+ 
+@@ -342,6 +428,72 @@ e2ap_msg_t e2ap_handle_e42_ric_subscription_request_iapp(e42_iapp_t* iapp, const
+   assert(valid_xapp_id(iapp, e42_sr->xapp_id) == true);
+   assert(valid_global_e2_node(iapp, &e42_sr->id ) );
+ 
++  // === [RATE] 速率上界检查（先于计数 CAP：速率违规直接拒）===
++  if(rate_gate_check_and_record(e42_sr->xapp_id) == false){
++      e2ap_msg_t refuse = {.type = NONE_E2_MSG_TYPE};
++      return refuse;
++  }
++
++  // === [ARB] R2-D：max-weight 跨 xApp 仲裁（DRF 主导份额×队列积压 O(1) argmax，Lyapunov DPP 形态）===
++  // 与 per-xApp 独立闸门（[GATE]/[RATE]）正交的全局竞争仲裁：多 xApp 争用全局容量
++  // CAP_TOTAL 时，按 w_i = Q_i / max(s_i, ε) 放行（Q_i=虚拟队列=累计被拒积压，
++  // s_i=DRF 主导份额=本 xApp 活跃订阅占全局容量之比）。理论形态：
++  //   argmax_i w_i·a_i − V·cost，Q_i(t+1)=[Q_i(t)−a_i(t)]^+ + r_i(t)（DPP 虚拟队列）
++  // 稳定性：[O(1/V), O(V)]（Neely）——V=FLEXRIC_ARB_V（默认 1）。
++  // 环境变量：FLEXRIC_ARB=1 开启；FLEXRIC_ARB_CAP_TOTAL=全局订阅容量（默认 256）；
++  //   FLEXRIC_ARB_POLICY={mw,fcfs,quota}（max-weight/先到先得/静态均分配额三臂）。
++  // 攻击者贪吃→s_i→1→w_i→低；良性低占用→Q 微涨即高权重→优先放行（差别性保护）。
++  if(arb_admit(e42_sr->xapp_id) == false){
++      printf("[ARB] xApp %u 订阅被仲裁拒绝（policy=%s cap_total=%ld）\n",
++             e42_sr->xapp_id, arb_policy_name(), arb_cap_total());
++      e2ap_msg_t refuse = {.type = NONE_E2_MSG_TYPE};
++      return refuse;
++  }
++
++  // === smoke test注入：每 xApp 活跃订阅数闸门（Klement Alg.3 / 候选1 CAP 机制最小版）===
++  // 环境变量 FLEXRIC_SUB_CAP 控制：未设置或 0 = baseline（不拦截）；>0 = 每 xApp 订阅上限
++  static long gate_cap = -1;
++  if(gate_cap == -1){
++    const char* env = getenv("FLEXRIC_SUB_CAP");
++    gate_cap = (env != NULL) ? atol(env) : 0;
++    printf("[GATE] FLEXRIC_SUB_CAP=%ld (0=baseline 不拦截)\n", gate_cap);
++  }
++  if(gate_cap > 0){
++    seq_arr_t arr = find_all_subs_map_ric_id(&iapp->map_ric_id, e42_sr->xapp_id);
++    size_t n_active = seq_size(&arr);
++    seq_arr_free(&arr, free_e2_node_ric_id_wrapper);
++    if((long)n_active >= gate_cap){
++      printf("[GATE] xApp %u 活跃订阅 %zu >= CAP %ld → REFUSE (ran_func=%u)\n",
++             e42_sr->xapp_id, n_active, gate_cap, e42_sr->sr.ric_id.ran_func_id);
++      e2ap_msg_t refuse = {.type = NONE_E2_MSG_TYPE};
++      return refuse; // 不转发 E2、不入 map_ric_id 表
++    }
++  }
++
++  // === [STATE] R1-B：全局状态量上界（三上界之"存量"维，从 R0 的计数打印升级为 REFUSE 强制）===
++  // 环境变量 FLEXRIC_STATE_CAP：map_ric_id 全局订阅条目总数上限（0=off）。
++  // 同构映射：三星 CN120266553A maxofRICRequestID=1024 静态全局上限（RIC Request ID 空间）——
++  // STATE on 时默认 1024 即三星 baseline 同构实现（对象语义=全局共享，非 per-xApp）。
++  static long state_cap = -1;
++  if(state_cap == -1){
++    const char* env = getenv("FLEXRIC_STATE_CAP");
++    state_cap = (env != NULL) ? atol(env) : 0;
++    printf("[STATE] FLEXRIC_STATE_CAP=%ld (0=off; 1024=三星静态上限同构)\n", state_cap);
++  }
++  if(state_cap > 0){
++    int rc_s = pthread_rwlock_rdlock(&iapp->map_ric_id.rw);
++    assert(rc_s == 0);
++    size_t total = bi_map_size(&iapp->map_ric_id.bimap);
++    rc_s = pthread_rwlock_unlock(&iapp->map_ric_id.rw);
++    assert(rc_s == 0);
++    if((long)total >= state_cap){
++      printf("[STATE] 全局订阅条目 %zu >= STATE_CAP %ld → REFUSE (xApp %u)\n",
++             total, state_cap, e42_sr->xapp_id);
++      e2ap_msg_t refuse = {.type = NONE_E2_MSG_TYPE};
++      return refuse;
++    }
++  }
++
+   xapp_ric_id_t xapp_ric_id = {.ric_id = e42_sr->sr.ric_id,
+                                 .xapp_id = e42_sr->xapp_id };
+ 
+diff --git a/src/ric/iApp/xapp_ric_id.c b/src/ric/iApp/xapp_ric_id.c
+index f63dc2e..ae1c547 100644
+--- a/src/ric/iApp/xapp_ric_id.c
++++ b/src/ric/iApp/xapp_ric_id.c
+@@ -1,4 +1,5 @@
+ 
++#include <stdlib.h>
+ #include "xapp_ric_id.h"
+ 
+ #include <assert.h>
+@@ -26,7 +27,19 @@ bool eq_xapp_ric_gen_id(xapp_ric_id_t const* m0, xapp_ric_id_t const* m1)
+   assert(m0 != NULL);
+   assert(m1 != NULL);
+ 
+-  if(eq_xapp_id(m0->xapp_id, m0->xapp_id) == false)
++  /* [R2-A 补丁⑤-B 根因修复] 原代码 eq_xapp_id(m0->xapp_id, m0->xapp_id) 自比较恒真
++   * （CVE-2026-37233）：xApp 身份维度失效，find_ric_req_map_ric_id 系右树查找退化为
++   * 仅按 ric_gen_id 匹配——churn 攻击者自报 req_id 与良性 xApp 重叠（每进程从 1 起，
++   * e42_xapp.c:420 add_act_proc）时，攻击者 DELETE 误中良性条目 → 删除良性真实订阅 →
++   * 回程 DELETE RESPONSE 经 find_xapp_map_ric_id 单键路由发给良性 xApp → SDK
++   * pending-miss assert 崩（assoc_rb_tree.c:457，21/21 churn 复现，R2A/disc H-B 3/3）。
++   * 开关 FLEXRIC_FIX_EQ_XAPPID（默认 off 保持上游缺陷行为供对照矩阵）。 */
++  static int fixed = -1;
++  if(fixed == -1){
++    const char* e = getenv("FLEXRIC_FIX_EQ_XAPPID");
++    fixed = (e != NULL && e[0] == '1') ? 1 : 0;
++  }
++  if(eq_xapp_id(m0->xapp_id, fixed ? m1->xapp_id : m0->xapp_id) == false)
+     return false;
+ 
+   return eq_ric_gen_id(&m0->ric_id, &m1->ric_id);
+diff --git a/src/ric/near_ric.c b/src/ric/near_ric.c
+index e6e19a8..918524b 100644
+--- a/src/ric/near_ric.c
++++ b/src/ric/near_ric.c
+@@ -271,10 +271,17 @@ bool net_pkt(e2ap_ep_t const *ep, int fd)
+ static inline
+ void consume_fd(int fd)
+ {
+-  assert(fd > 0);
++  /* [R1G] 防崩补丁：原 assert(fd>0) 在断连清理风暴下触发（R1B r10/r100
++   * 档 pending timeout → fd 无效 → RIC 崩溃的直接根因）。防御性跳过。 */
++  if(fd <= 0){
++    printf("[near_ric][PATCH] consume_fd 无效 fd=%d，跳过（防断连竞态崩溃）\n", fd);
++    return;
++  }
+   uint64_t read_buf = 0;
+   ssize_t const bytes = read(fd,&read_buf, sizeof(read_buf));
+-  assert(bytes == sizeof(read_buf));
++  if(bytes != (ssize_t)sizeof(read_buf)){
++    printf("[near_ric][PATCH] consume_fd 短读 %zd，跳过\n", bytes);
++  }
+ }
+ 
+ /*
+@@ -356,7 +363,13 @@ bool pend_event(near_ric_t* ric, int fd, pending_event_t** p_ev)
+ 
+   void* it = find_if(&ric->pending.left,start_it, end_it, &fd, eq_fd);
+ 
+-  assert(it != end_it);
++  /* [R1G] 防崩补丁：断连清理风暴下 fd 已从 pending 表移除但事件仍抵达
++   * （near_ric.c:366 原断言崩溃，与 :274 consume_fd 同一竞态家族）。
++   * 未找到→返回 false 走 unknown 分支前先吞掉该事件。 */
++  if(it == end_it){
++    printf("[near_ric][PATCH] pend_event fd=%d 已不在 pending 表，忽略\n", fd);
++    return false;
++  }
+   *p_ev = assoc_value(&ric->pending.left ,it);
+   }
+   return *p_ev != NULL;
+@@ -397,7 +410,9 @@ async_event_arr_t next_asio_event_ric(near_ric_t* ric)
+     } else if (pend_event(ric,fd_read.fd[i], &dst->p_ev) == true){
+       dst->type = PENDING_EVENT;
+     } else {
+-      assert( 0!=0 && "Unknown event happened!");
++      /* [R1G] 防崩补丁：pending 表已清空的迟到事件——吞掉而非 assert 崩溃 */
++      printf("[near_ric][PATCH] 忽略孤儿事件 fd=%d\n", fd_read.fd[i]);
++      dst->type = CHECK_STOP_TOKEN_EVENT;
+     }
+   }
+ 
+diff --git a/src/xApp/e42_xapp.c b/src/xApp/e42_xapp.c
+index 5826b46..8be5578 100644
+--- a/src/xApp/e42_xapp.c
++++ b/src/xApp/e42_xapp.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ 
++#include <stdlib.h>
+ #include "e42_xapp.h"
+ 
+ #include "act_proc.h"
+@@ -293,6 +294,24 @@ void e2_event_loop_xapp(e42_xapp_t* xapp)
+             || *e.p_ev == E42_RIC_SUBSCRIPTION_DELETE_REQUEST_PENDING_EVENT 
+             || *e.p_ev == E42_RIC_CONTROL_REQUEST_PENDING_EVENT ) && "Unforeseen pending event happened!" );
+ 
++      /* [R2-A 补丁⑤-D 到期容错] R2A/fix A_rep2 实证：订阅 pending 5s 到期在
++       * RIC 过载/误路由扰动下远程触发（同族第六处崩溃，churn 特异）。
++       * 开关 FLEXRIC_XAPP_PENDTO_TOLERANT（默认 off=上游行为）：到期打印+清
++       * 本条 pending（rm_pending_event_fd 按 fd 删，防周期定时器反复触发），
++       * 不 assert 自杀——良性 xApp 对 RIC 侧延迟的最小韧性。 */
++      static int pendto_tolerant = -1;
++      if(pendto_tolerant == -1){
++        const char* e_ = getenv("FLEXRIC_XAPP_PENDTO_TOLERANT");
++        pendto_tolerant = (e_ != NULL && e_[0] == '1') ? 1 : 0;
++      }
++      if(pendto_tolerant && *e.p_ev != E42_SETUP_REQUEST_PENDING_EVENT){
++        printf("[xApp][PATCH5-D] pending ev=%d 到期（RIC 过载/晚到）— tolerate, 清除不自杀\n", (int)*e.p_ev);
++        fflush(stdout);
++        rm_pending_event_fd(&xapp->pending, fd);
++        rm_fd_asio_xapp(&xapp->io, fd);
++        continue;
++      }
++
+       assert(*e.p_ev != E42_RIC_SUBSCRIPTION_REQUEST_PENDING_EVENT && "Timeout waiting for Report. Connection lost with the RIC?");
+       assert(*e.p_ev != E42_RIC_SUBSCRIPTION_DELETE_REQUEST_PENDING_EVENT  && "Timeout waiting for Subscription Delete. Connection lost with the RIC?");
+       assert(*e.p_ev != E42_RIC_CONTROL_REQUEST_PENDING_EVENT && "Timeout waiting for Control ACK. Connection lost with the RIC?");
+diff --git a/src/xApp/endpoint_xapp.c b/src/xApp/endpoint_xapp.c
+index c317009..d1e7859 100644
+--- a/src/xApp/endpoint_xapp.c
++++ b/src/xApp/endpoint_xapp.c
+@@ -56,6 +56,20 @@ void init_sctp_conn_client(e2ap_ep_xapp_t* ep, const char* addr, int port)
+   const int no_delay = 1;
+   setsockopt(sock_fd, IPPROTO_SCTP, SCTP_NODELAY, &no_delay, sizeof(no_delay));
+ 
++  /* === [R1F] open-loop 攻击器防失速：SO_SNDTIMEO 环境变量化 ===
++   * FLEXRIC_SNDTIMEO_MS>0 时发送超时快速失败（计入 g_e2ap_snd_fail_cnt），
++   * 攻击器不再被受害者流控静默卡死（C1 伪存活根因之一）；默认 0=原阻塞行为。 */
++  {
++    const char* st_env = getenv("FLEXRIC_SNDTIMEO_MS");
++    if(st_env != NULL && atoi(st_env) > 0){
++      int ms = atoi(st_env);
++      struct timeval tv = { .tv_sec = ms / 1000,
++                            .tv_usec = (ms % 1000) * 1000 };
++      setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
++      printf("[XAPP] SO_SNDTIMEO=%dms (open-loop 防失速)\n", ms);
++    }
++  }
++
+ 
+   // This is NOT working! 
+   struct linger lin = {0};
+diff --git a/src/xApp/msg_handler_xapp.c b/src/xApp/msg_handler_xapp.c
+index 397e3b8..0622b36 100644
+--- a/src/xApp/msg_handler_xapp.c
++++ b/src/xApp/msg_handler_xapp.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ 
++#include <stdlib.h>
+ #include <assert.h>
+ #include <pthread.h>
+ #include <stdio.h>
+@@ -85,6 +86,27 @@ void add_pending_event_xapp(e42_xapp_t* xapp, pending_event_xapp_t* ev)
+ static
+ void rm_pending_event_xapp(e42_xapp_t* xapp, pending_event_xapp_t* ev)
+ {
++  /* [R2-A 补丁⑤-A pending-miss 容错] 判别实验 H-B 定案（R2A/disc 3/3 同签名）：
++   * churn 攻击者自报 req_id 与良性 xApp 自报空间重叠（每进程从 1 起，e42_xapp.c:420），
++   * 经 iApp eq_xapp_ric_gen_id 自比较缺陷（xapp_ric_id.c:29, CVE-2026-37233）误路由的
++   * DELETE RESPONSE 使 find_act_proc 命中（act_proc 常驻）而本地 pending 表无此事件
++   * （良性从未发起该操作）——原 bi_map_extract_right 直 extract 触发
++   * assoc_rb_tree.c:457 assert，RIC 远程打崩良性 xApp（21/21 churn 复现）。
++   * 键语义对齐：右树 cmp 只按 ev 类型比较（pending_events.c:28），故预查也只按
++   * 类型存在性判断（find_pending_event_ev 的完整三元组 eq 过严——v1 曾误 miss
++   * SET UP 响应的栈垃圾 id 查询键导致合法删除被跳过、1s 定时器残留，已回归修复）。
++   * 开关 FLEXRIC_PATCH5_SDK（默认 off 保持上游历史行为供对照）。 */
++  static int tolerant = -1;
++  if(tolerant == -1){
++    const char* e = getenv("FLEXRIC_PATCH5_SDK");
++    tolerant = (e != NULL && e[0] == '1') ? 1 : 0;
++  }
++  if(tolerant && find_pending_event_by_type(&xapp->pending, ev->ev) == false){
++    printf("[xApp][PATCH5] pending-miss RESPONSE (ev=%d req_id=%u) — tolerate, no local pending\n",
++           (int)ev->ev, (unsigned)ev->id.ric_req_id);
++    fflush(stdout);
++    return;
++  }
+   int* fd = rm_pending_event_ev(&xapp->pending, ev);
+   rm_fd_asio_xapp(&xapp->io, *fd);
+   defer({ free(fd); } );
+@@ -146,7 +168,15 @@ e2ap_msg_t e2ap_msg_handle_xapp(e42_xapp_t* xapp, const e2ap_msg_t* msg)
+   ric_subscription_response_t const* resp = &msg->u_msgs.ric_sub_resp;
+ 
+   act_proc_ans_t rv = find_act_proc(&xapp->act_proc, resp->ric_id.ric_req_id);
+-  assert(rv.ok == true && "ric_req_id not registered in the registry");
++  /* [R1-A] open-loop 容错：churn 模式下轮 N 的订阅响应可能在轮 N 的删除之后
++     到达（注册已被 rm_report 先行移除）——晚到的响应不得 assert 自杀。 */
++  if(rv.ok == false){
++    printf("[xApp]: late SUBSCRIPTION RESPONSE for unregistered RIC_REQ_ID %d — ignore (open-loop)\n",
++           resp->ric_id.ric_req_id);
++    signal_sync_ui(&xapp->sync);
++    e2ap_msg_t none = {.type = NONE_E2_MSG_TYPE};
++    return none;
++  }
+ 
+   printf("[xApp]: SUBSCRIPTION RESPONSE rx\n");
+ 
+@@ -184,7 +214,15 @@ e2ap_msg_t e2ap_msg_handle_xapp(e42_xapp_t* xapp, const e2ap_msg_t* msg)
+   ric_subscription_delete_response_t const* resp = &msg->u_msgs.ric_sub_del_resp;
+ 
+   act_proc_ans_t rv = find_act_proc(&xapp->act_proc, resp->ric_id.ric_req_id);
+-  assert(rv.ok == true && "ric_req_id not registered in the registry");
++  /* [R1-A] open-loop 容错：异步攻击器不等响应即继续（FLEXRIC_SYNC_WAIT_MS=0），
++     rm_report 已先行移除注册——晚到的 delete response 不得 assert 自杀。
++     与 RIC 侧 "no xApp associated" 安全跳过同构。 */
++  if(rv.ok == false){
++    printf("[xApp]: late DELETE RESPONSE for unregistered RIC_REQ_ID %d — ignore (open-loop)\n",
++           resp->ric_id.ric_req_id);
++    e2ap_msg_t none = {.type = NONE_E2_MSG_TYPE};
++    return none;
++  }
+ 
+   printf("[xApp]: E42 SUBSCRIPTION DELETE RESPONSE rx\n");
+ 
+@@ -288,7 +326,14 @@ sm_ind_data_t ind_sm_payload(ric_indication_t const* src)
+   assert( ack->status == RIC_CONTROL_STATUS_SUCCESS && "Only success supported ") ;
+ #endif
+   act_proc_ans_t rv = find_act_proc(&xapp->act_proc, ack->ric_id.ric_req_id);
+-  assert(rv.ok == true && "ric_req_id not registered in the registry");
++  /* [R2-A 补丁⑤-A 延伸] 原裸 assert：晚到/误路由 CONTROL ACK 不得打崩 SDK
++   * （与 SUBSCRIPTION/DELETE RESPONSE 容错同构，msg_handler_xapp.c:148/:194 先例） */
++  if(rv.ok == false){
++    printf("[xApp]: late CONTROL ACK for unregistered RIC_REQ_ID %d — ignore (open-loop)\n",
++           ack->ric_id.ric_req_id);
++    e2ap_msg_t none = {.type = NONE_E2_MSG_TYPE};
++    return none;
++  }
+ 
+   printf("[xApp]: CONTROL ACK rx\n");
+ 
+@@ -520,11 +565,20 @@ e2ap_msg_t e2ap_handle_e42_ric_subscription_request_xapp(struct e42_xapp_s* xapp
+   defer({ free_byte_array(ba_msg) ;}; );
+ 
+   // A pending event is created along with a timer of 5000 ms,
+-  // after which an event will be triggered. The answer needs to arrive before 
++  // after which an event will be triggered. The answer needs to arrive before
+   // the timer expires
+-  pending_event_xapp_t ev = {.ev = E42_RIC_SUBSCRIPTION_REQUEST_PENDING_EVENT, 
++  /* [R1-A] pending 超时可配：FLEXRIC_PENDING_TIMEOUT_MS（缺省 5000=原行为）。
++   * 异步攻击器（open-loop）下响应来不及收——大值防 5s 定时器到期后
++   * 事件循环 assert 自杀（smoke test的攻击器自杀链）。 */
++  static uint32_t pend_ms = 0;
++  if(pend_ms == 0){
++    pend_ms = 5000;
++    const char* env = getenv("FLEXRIC_PENDING_TIMEOUT_MS");
++    if(env != NULL) pend_ms = (uint32_t)atol(env);
++  }
++  pending_event_xapp_t ev = {.ev = E42_RIC_SUBSCRIPTION_REQUEST_PENDING_EVENT,
+                               .id = e42_sr->sr.ric_id,
+-                              .wait_ms = 5000};
++                              .wait_ms = pend_ms};
+   add_pending_event_xapp(xapp, &ev);
+ 
+ 
+@@ -554,9 +608,16 @@ e2ap_msg_t e2ap_handle_e42_subscription_delete_request_xapp(e42_xapp_t* xapp, co
+ 
+   // A pending event is created along with a timer of 10000 ms,
+   // after which an event will be generated
+-  pending_event_xapp_t ev = {.ev = E42_RIC_SUBSCRIPTION_DELETE_REQUEST_PENDING_EVENT, 
++  /* [R1-A] 同订阅 pending：FLEXRIC_PENDING_TIMEOUT_MS 可配（缺省 10000） */
++  static uint32_t pend_del_ms = 0;
++  if(pend_del_ms == 0){
++    pend_del_ms = 10000;
++    const char* env = getenv("FLEXRIC_PENDING_TIMEOUT_MS");
++    if(env != NULL) pend_del_ms = (uint32_t)atol(env);
++  }
++  pending_event_xapp_t ev = {.ev = E42_RIC_SUBSCRIPTION_DELETE_REQUEST_PENDING_EVENT,
+                               .id = e42_sdr->sdr.ric_id,
+-                              .wait_ms = 10000};
++                              .wait_ms = pend_del_ms};
+   add_pending_event_xapp(xapp, &ev);
+ 
+ 
+diff --git a/src/xApp/pending_event_xapp.c b/src/xApp/pending_event_xapp.c
+index 1344f9d..fc0c3fc 100644
+--- a/src/xApp/pending_event_xapp.c
++++ b/src/xApp/pending_event_xapp.c
+@@ -164,6 +164,31 @@ bool find_pending_event_ev(pending_event_xapp_ds_t* p, pending_event_xapp_t* ev)
+   return it.it != end.it;
+ }
+ 
++/* [R2-A 补丁⑤-A 配套] 按 ev 类型的存在性查询——键语义与右树 cmp_pending_event
++ * （pending_events.c:28，仅比较类型枚举）完全对齐，供 extract 前预查：
++ * 类型存在⇒extract 可达；类型不存在⇒extract 必 assert（assoc_rb_tree.c:457）。
++ * find_pending_event_ev 的完整三元组 eq 与 cmp 键语义不一致，不能用于预查。 */
++static inline
++bool eq_pending_ev_type(const void* m0_v, const void* m1_v)
++{
++  assert(m0_v != NULL);
++  assert(m1_v != NULL);
++  return ((pending_event_xapp_t*)m0_v)->ev == ((pending_event_xapp_t*)m1_v)->ev;
++}
++
++bool find_pending_event_by_type(pending_event_xapp_ds_t* p, pending_event_t ev)
++{
++  assert(p != NULL);
++
++  lock_guard(&p->pend_mtx);
++
++  pending_event_xapp_t probe = {.ev = ev};
++  bmr_iter_t it = bi_map_front_right(&p->pending);
++  bmr_iter_t end = bi_map_end_right(&p->pending);
++  it = find_if_bi_map_right(&p->pending, it, end, &probe, eq_pending_ev_type);
++  return it.it != end.it;
++}
++
+ int* rm_pending_event_ev(pending_event_xapp_ds_t* p, pending_event_xapp_t* ev )
+ {
+   assert(p != NULL);
+diff --git a/src/xApp/pending_event_xapp.h b/src/xApp/pending_event_xapp.h
+index c235bed..d5fae09 100644
+--- a/src/xApp/pending_event_xapp.h
++++ b/src/xApp/pending_event_xapp.h
+@@ -50,6 +50,7 @@ void free_pending_events( pending_event_xapp_ds_t* ds);
+ bool find_pending_event_fd(pending_event_xapp_ds_t* p, int fd);
+ 
+ bool find_pending_event_ev(pending_event_xapp_ds_t* p, pending_event_xapp_t* ev);
++bool find_pending_event_by_type(pending_event_xapp_ds_t* p, pending_event_t ev);
+ 
+ void add_pending_event( pending_event_xapp_ds_t* ds, int fd, pending_event_xapp_t* ev );
+ 
+diff --git a/src/xApp/sync_ui.c b/src/xApp/sync_ui.c
+index bc837d8..90fdbe1 100644
+--- a/src/xApp/sync_ui.c
++++ b/src/xApp/sync_ui.c
+@@ -25,6 +25,8 @@
+ #include <assert.h>
+ #include <errno.h>
+ #include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
+ 
+ void init_sync_ui(sync_ui_t* s)
+ {
+@@ -36,13 +38,23 @@ void init_sync_ui(sync_ui_t* s)
+ 
+   pthread_mutexattr_t *mtx_attr = NULL;
+ #ifdef DEBUG
+-  *mtx_attr = PTHREAD_MUTEX_ERRORCHECK; 
++  *mtx_attr = PTHREAD_MUTEX_ERRORCHECK;
+ #endif
+ 
+   rc = pthread_mutex_init(&s->mtx_sync, mtx_attr );
+   assert(rc == 0);
+ 
++  /* [R1-A] SDK 同步等待可配：FLEXRIC_SYNC_WAIT_MS（缺省 5000=原行为）。
++   * 0 = open-loop：发送后立即返回不等 RIC 响应（异步攻击器语义，
++   * 消除 closed-loop 负载发生器随 RIC 变慢自我节流的 coordinated omission）。 */
+   s->wait_ms = 5000;
++  {
++    const char* env = getenv("FLEXRIC_SYNC_WAIT_MS");
++    if(env != NULL){
++      s->wait_ms = (uint32_t)atol(env);
++      printf("[SYNC] FLEXRIC_SYNC_WAIT_MS=%u ms\n", s->wait_ms);
++    }
++  }
+ 
+   s->flag_sync = false;
+   s->msg_ack = false;
+@@ -64,6 +76,10 @@ void free_sync_ui(sync_ui_t* s)
+ void cond_wait_sync_ui(sync_ui_t* s, uint32_t wait_ms)
+ {
+   assert(s != NULL);
++
++  /* [R1-A] open-loop：wait_ms=0 直接返回（不等响应、不 assert） */
++  if(wait_ms == 0) return;
++
+   assert(wait_ms > 0);
+ 
+   pthread_mutex_lock(&s->mtx_sync);

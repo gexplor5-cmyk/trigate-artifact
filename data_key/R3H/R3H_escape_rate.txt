@@ -1,0 +1,28 @@
+R3H 逃逸率读法（FW/Kramers 框架的 P(div|CAP,T_drive)≈1-exp[-λ_esc(CAP)·T_drive]，descriptive）
+证据 1（早停=短驱动窗）：五源全量扫描（R2E/D18/R3D/R3A 按各自 raw 的 sent≥65400 口径；R2B 按
+  R2B_stratified.attack_class 官方口径列）——共 12 个早停 run（驱动窗 2-7s），
+  suppressed（pendTO=0）12/12——无一发散，跨源跨臂跨位置一致。
+  早停 run 清单（12 个，逐源标注；【更正 2026-10-20】原版仅扫 R2E/D18/R3D 三源得 3 个）：
+    d18_c4_rep2                  src=D18  cap=  4 done_t=1.98s pendTO=0
+    r2b_churn_l1l2_rep4          src=R2B  cap= -1 done_t=2.37s pendTO=0
+    r2b_churn_l1l2_rep9          src=R2B  cap= -1 done_t=2.07s pendTO=0
+    r2b_churn_ric_l1_rep4        src=R2B  cap= -1 done_t=2.22s pendTO=0
+    r2b_churn_ric_l1_rep6        src=R2B  cap= -1 done_t=2.16s pendTO=0
+    r2b_churn_ric_l1_rep8        src=R2B  cap= -1 done_t=2.24s pendTO=0
+    r2b_churn_ric_l1_rep9        src=R2B  cap= -1 done_t=2.04s pendTO=0
+    r2e_cap4_rep3                src=R2E  cap=  4 done_t=2.05s pendTO=0
+    r3a_l1l2_cap16_rep4          src=R3A  cap= 16 done_t=2.11s pendTO=0
+    r3a_l1l2_cap16_rep5          src=R3A  cap= 16 done_t=2.14s pendTO=0
+    r3a_ricl1_cap16_rep1         src=R3A  cap= 16 done_t=2.08s pendTO=0
+    r3d_cap20_rep1               src=R3D  cap= 20 done_t=2.05s pendTO=0
+
+证据 2（全程=长驱动窗）：同 CAP 全程 run 按 CAP 分化（见分臂汇总表）
+读法：若结局=逃逸事件（泊松 λ_esc·T），则短窗 run 的存活率应显著更高且与 CAP 无关——与清单一致；
+定量约束受 n 限制（每格 2-10 run），λ_esc(CAP) 只给区间读法：
+  cap20: P_h(全程)=0/2 → λ_esc≈inf（Jeffreys CI 见分臂表）
+  cap24: P_h(全程)=2/3 → λ_esc≈0.0203/s（Jeffreys CI 见分臂表）
+  cap28: P_h(全程)=2/3 → λ_esc≈0.0203/s（Jeffreys CI 见分臂表）
+  cap32: P_h(全程)=2/5 → λ_esc≈0.0458/s（Jeffreys CI 见分臂表）
+
+准势读法（非梯度系统只取指数主导）：ΔV(CAP)∝-ln λ_esc 在双稳区递减（CAP↑→势垒↓）——与 fold 分岔
+的 c(u) 折返机理一致；E-K 前置因子不主张（离散跳过程→流体极限的 FW 适配，引 Shwartz-Weiss 1995）。

@@ -1,0 +1,50 @@
+R3C b2/b1 误伤机制定案（LD_PRELOAD 双探针+时间线 join，2026-10-20）
+======================================================================
+设计：{c_l0, c_full}×3 rep 重跑（R2C 同构：L0 预载链 mutex_probe.so:l0_gate.so，
+churn 全速 20s，b1/b2 良性）。探针=src/mutex_probe.c（拦 pthread_mutex_lock/unlock
++epoll_wait，hold>50us 记录 caller 地址/时刻/时长；每 16384 ops 汇总）。
+原始数据：results/R3C/{R3C_raw.csv, 6 run 目录（mutex_probe.log/fd_curve.csv/
+monitor.csv/benign*）}；分析 results/R3/R3BCD_analysis.txt §R3C。
+
+一、结局格局（与 R2C 7/9 同型=随机性确认）
+  run            b1_ind b2_ind  判读
+  r3c_l0_rep1    400    140    b2 受损
+  r3c_l0_rep2    302    145    b1 亦部分受损（302<400）
+  r3c_l0_rep3    401    261    b2 部分受损
+  r3c_full_rep1  401    137    b2 受损（R2C 中该格 rep1=400 未受损→重跑受损=时序随机性）
+  r3c_full_rep2  398    398    双完好（本轮唯一）
+  r3c_full_rep3  400    137    b2 受损
+  → b2<300 者 5/6（R2C 7/9）；B4-M1 两存疑 run 之一（c_full_rep1）重跑后受损，
+    佐证「断流后恢复」与「全程完好」的混合格局系订阅建立窗时序竞态。
+
+二、三候选判别（协议 H8）
+  ①全局互斥锁内跨阻塞 SCTP IO——【实证成立，为机制家族主证据】
+    - 慢锁（hold>50us）事件：攻击窗 1242-2588 vs 攻击前 158-224（7-16×）
+    - 最大持有 10.0-11.0 秒（全部 6 run）：锁持有跨越阻塞 IO 的直接证据
+      （e2ap_ep.c 的 lock_guard(&ep->mtx) 包裹 sctp_recvmsg/sendmsg——RIC 侧
+      无 SO_SNDTIMEO，背压关联的发送可在临界区内阻塞数秒）
+    - 巨型持有（p99 8.1-8.9s）集中在攻击前的建立期窗（握手/插件加载在锁内
+      阻塞）——恰与 b2 订阅建立窗（t≈9-15s）重叠
+    - 攻击窗 p99 持有 0.1-0.4s×千次级累积=同等串行化效应
+    - 【判别边界（诚实）】完好 run（full_rep2）同样存在 11s 级持有与最多的
+      慢锁计数（5351）→ 长持有是背景必要条件而非单独充分判别；b2 受损=
+      其订阅/指示路径撞上锁串行化窗的概率性事件（5-7/9 发生率两轮一致）
+  ②fd 桶污染——【部分证据，不判别】
+    - l0 臂 fd 峰值 281-445 vs full 臂 64-81（六倍差；asio epoll 事件计数
+      37770-1341059）——L0 丢弃引发攻击器 SDK 关联循环→fd/事件压力真实存在
+    - 但 fd 峰值与 b2 受损不判别（full_rep2 完好与 full_rep1/3 受损同为 64-81）
+  ③slot 碰撞（xapp_id%1024）——【未插桩，无从判】（本轮探针未覆盖，如实注明）
+
+三、定案句（论文口径）
+  b2 误伤机制=RIC 全局互斥锁内跨阻塞 SCTP IO 的串行化（10-11 秒级锁持有
+  实测在案）×b2 订阅建立窗时序暴露的概率性事件；「per-assoc ρ 共摊」机制
+  维持证伪（R2C_M5 §3.2），fd 桶污染为并行存在的次要应力但不判别结局。
+  工程修复方向：临界区内禁阻塞性 IO（发送侧 SO_SNDTIMEO/异步化）——
+  与 L1 解码前 DROP 的「消除等待-超时-清理生命周期」主张（D17_v2）同族。
+
+四、V23 工具注记
+  offcputime-bpfcc/offwaketime 不可用（容器 ptrace_scope=1/BPF 无权限，strace
+  亲验 Operation not permitted）→ 降级路径①LD_PRELOAD（协议预案）已执行；
+  addr2line 运行期地址换算需 PIE 基址（本轮 run 未捕获 maps，符号化留写作期
+  以同法补做：新起插桩 RIC 抓 maps 后 (addr-base) 换算——基址抓取方法已验证）。
+  Coz 式虚拟延迟因果定案未做（可选后置，未注册判据）。

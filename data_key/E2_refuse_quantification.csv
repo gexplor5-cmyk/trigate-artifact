@@ -1,0 +1,13 @@
+run_id,refuse_print_lines,refuse_cumulative,admitted_approx,note
+c3_pos_both_rep1,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_both_rep2,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_both_rep3,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_e2_only_rep1,4,1501,1565,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_e2_only_rep2,4,1501,1565,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_e2_only_rep3,4,1501,1565,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_none_rep1,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_none_rep2,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_none_rep3,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_ric_only_rep1,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_ric_only_rep2,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）
+c3_pos_ric_only_rep3,0,0,,打印行≠拒绝数：每 500 笔打一行（B-m2 口径修复）

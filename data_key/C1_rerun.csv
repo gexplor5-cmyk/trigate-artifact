@@ -1,0 +1,13 @@
+run_id,rep,grace_ms,reclaimed,zombie_ind_cnt,rss_after,agent_alive,reclaim_delay_s
+c1_lease_0_rep1,1,0,0,1,,1,
+c1_lease_0_rep2,2,0,0,1,,1,
+c1_lease_0_rep3,3,0,0,1,,1,
+c1_lease_1000_rep1,1,1000,20,1,,1,
+c1_lease_1000_rep2,2,1000,20,1,,1,
+c1_lease_1000_rep3,3,1000,20,1,,1,
+c1_lease_2000_rep1,1,2000,20,1,,1,
+c1_lease_2000_rep2,2,2000,20,1,,1,
+c1_lease_2000_rep3,3,2000,20,1,,1,
+c1_lease_5000_rep1,1,5000,20,1,,1,
+c1_lease_5000_rep2,2,5000,20,1,,1,
+c1_lease_5000_rep3,3,5000,20,1,,1,

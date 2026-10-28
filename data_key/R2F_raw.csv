@@ -1,0 +1,4 @@
+run_id,attacker,rate,gate,rep,ric_alive,assert_cnt,refuse_cnt,sub_fwd_cnt,sent_total,sndfail,delivered,done_t,ceiling_hit,attack_rate_peak,ric_cpu_mean,ric_cpu_peak,ric_rss_peak,agent_cpu_mean
+f4_r10000_rate_rep1,flood,10000,rate,1,1,0,106,891,53863,236,53627,30.10,0,10001,81.9,145.0,362448,28.7
+f4_r10000_rate_rep2,flood,10000,rate,2,1,0,130,700,65400,0,65400,6.54,1,10001,113.8,158.0,6660,48.2
+f4_r10000_rate_rep3,flood,10000,rate,3,1,0,130,700,65400,0,65400,6.54,1,10001,114.0,155.0,6880,49.1

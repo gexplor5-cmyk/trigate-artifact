@@ -1,0 +1,66 @@
+==============================================================================
+R3G：缺陷#7（第 7 处远程可触发 DoS）带落盘的 gdb 复现证据包
+（双审第一轮 M3/B5-M1 处置；2026-10-20 19:12-19:20 执行）
+==============================================================================
+
+〇、处置背景
+  双审指出：协议附录 B/RESEARCH_LOG:195/源码注释三处声称「10/10 确定性复现
+  +gdb 栈在案」，但全盘无 gdb 会话输出、无复现日志——证据仅存文字层互引。
+  本证据包以受控二进制对照独立重做该复现并全程落盘。
+
+一、实验设计（差异唯一化）
+  1. /root/autodl-tmp/flexric_r3g = flexric 生产工作树全量副本（含全部已提交
+     于工作树的缺陷①-⑥修复与 PATCH7），随后对**唯一一个文件**执行
+     git restore：src/lib/e2ap/v2_03/dec/e2ap_msg_dec_asn.c（撤除 PATCH7
+     五层守卫中的解码器侧守卫：IE 计数守卫 :473-482 + 终层 type/NULL 守卫
+     :2757-2765，恢复 Release NDEBUG 下失效的原 assert 版本）。
+  2. 二进制指纹（results/R3G/R3G_binaries.md5）：
+     pre-patch（r3g 构建）md5=20a06871ee51de687513b9b3a9dc3aec
+     生产修复版            md5=d48e1402ea42c89ed69c360c95fe717a
+  3. 环境与 R3B 截断臂同款：L1 全开（FAILCLOSED=1/FULLPOLICY=reject/
+     MINLEN=0——关短帧丢弃以隔离守卫唯一差异）+ emu_agent_gnb 在场。
+  4. 触发器与 R3B trunc 臂同款：python SCTP SOCK_SEQPACKET 发 2 字节
+     {0x00,0x0f}（pc 白名单内+截断 body）→ sleep 0.3s → close 关联，×5 轮。
+  5. 捕获方式：gdb --batch launch 模式（容器 ptrace_scope=1 下 attach 不可用，
+     launch 为父子关系豁免；R3C 已亲验 attach 路径不可行），
+     SIGSEGV 自动停驻并执行 bt 25 + info registers rip。
+
+二、结果（R3G_repro.csv 本轮生成；判定字段由 gdb_session.txt 逐文件重扫）
+  ── pre-patch（守卫撤除）10 rep ──
+  10/10 CRASHED；10 个 gdb 会话的 #0 栈帧**完全一致**：
+    #0 e2ap_dec_e42_subscription_request (pdu=<optimized out>)
+       at src/lib/e2ap/v2_03/dec/e2ap_msg_dec_asn.c:482
+    #1 e2ap_msg_dec_asn (:2720)
+    #2 e2ap_msg_dec_iapp (src/ric/iApp/e2ap_iapp.c:125)
+  rip 停在 e2ap_dec_e42_subscription_request+88——与协议附录 B 注册的
+  「gdb 栈：#0 e2ap_dec_e42_subscription_request」「e2ap_msg_dec_asn.c:482
+  无守卫索引 protocolIEs.list.array[1] 越界」逐位一致。
+  ── 修复对照（生产二进制，唯一差异=守卫；MINLEN=0 关）3 rep ──
+  3/3 ALIVE，[DEC][PATCH7] 守卫打印触发（ric_stdout 含 PATCH7 行）——
+  差异唯一归因于解码器守卫层（第五层 MINLEN 关闭状态下依然存活）。
+
+三、证据链升级声明（论文口径）
+  缺陷#7 证据标准自此对齐缺陷⑤先例（原始产物在盘可审）：
+  「在盘 10/10 gdb 复现（R3G，二进制指纹+会话文件 10 份）+ 受控对照 3/3
+   存活（唯一差异=守卫）+ R3B trunc_fix 3/3 存活（MINLEN=8 双层版）+
+   v1_partial 2 run 崩溃记录（中间版本二进制）」。
+  原「R3B smoke期 10/10」叙述（无落盘）废止独立引用资格，以 R3G 重做为
+  唯一复现证据源；附录 B 的栈帧声称经 R3G 独立验证为真。
+
+四、文件清单
+  R3G_repro.csv                 判定总表（13 run）
+  R3G_binaries.md5              两二进制指纹
+  prepatch_rep{1..10}/gdb_session.txt   完整 gdb 会话（含 bt 25 + rip）
+  prepatch_rep{1..10}/{agent.log,trigger.log}
+  fixctrl_rep{1..3}/{ric_stdout.log,agent.log,trigger.log,ric.log}
+  progress.log                  时间线（19:12:15-19:20:08）
+  R3G_repro_v1_wronggrep.csv.bak 首版判定 CSV（grep 模式缺陷把
+                                "Thread received signal" 误判 NO_CRASH——
+                                保留作管道教训，正式判定以重扫版为准）
+
+五、工程注记
+  r3g 副本构建的坑：cp -a 全树后 CMakeCache 仍指向原目录源路径，首次
+  make 实际编译原目录源（白编）——以 sed 全量改写 build 树内路径+touch
+  源文件后重编解决（progress.log 可见两轮构建）。此坑与 R3B 的
+  「progress.log 自报时间与 Birth 矛盾」（m6）同族：构建/日志系统的
+  自报信息不可作为物理证据，指纹（md5）才是。

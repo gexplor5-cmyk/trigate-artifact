@@ -1,0 +1,4 @@
+rep,b1_alive,b2_alive,b1_ind,b2_ind,l1drop,failclosed_drop,full_reject,cpu
+1,1,1,201,235,58001,0,0,74.2
+2,1,1,200,249,54001,0,0,67.3
+3,1,1,201,250,26001,0,0,59.6

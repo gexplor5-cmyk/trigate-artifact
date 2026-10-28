@@ -1,0 +1,69 @@
+======================================================================
+R3B B11 针对性触发收口（判据 P4/P5 核对）
+======================================================================
+  b11_trunc_fix_rep1: alive=1/1 b=1/1 ind=100/99 fc_drop_lines=1 full_rej_lines=0 l1=0->0 sub_fwd=0 cpu=0
+  b11_trunc_fix_rep2: alive=1/1 b=1/1 ind=51/100 fc_drop_lines=1 full_rej_lines=0 l1=0->0 sub_fwd=0 cpu=0
+  b11_trunc_fix_rep3: alive=1/1 b=1/1 ind=50/99 fc_drop_lines=1 full_rej_lines=0 l1=0->0 sub_fwd=0 cpu=0
+  b11_malf_fc_rep1: alive=1/1 b=1/1 ind=301/299 fc_drop_lines=1 full_rej_lines=0 l1=0->1 sub_fwd=2 cpu=1.1
+  b11_malf_nofc_rep1: alive=1/1 b=1/1 ind=300/299 fc_drop_lines=0 full_rej_lines=0 l1=0->1 sub_fwd=2 cpu=1.1
+  b11_malf_fc_rep2: alive=1/1 b=1/1 ind=450/450 fc_drop_lines=1 full_rej_lines=0 l1=0->1 sub_fwd=2 cpu=1.0
+  b11_malf_nofc_rep2: alive=1/1 b=1/1 ind=301/299 fc_drop_lines=0 full_rej_lines=0 l1=0->1 sub_fwd=2 cpu=0.8
+  b11_fill_pass_rep1: alive=1/1 b=1/1 ind=112/130 fc_drop_lines=0 full_rej_lines=0 l1=0->0 sub_fwd=758 cpu=99.2
+  b11_fill_rej_rep1: alive=1/1 b=1/1 ind=301/350 fc_drop_lines=0 full_rej_lines=33 l1=0->64001 sub_fwd=2 cpu=1.1
+  b11_fill_lru_rep1: alive=1/1 b=1/1 ind=108/127 fc_drop_lines=0 full_rej_lines=0 l1=0->18001 sub_fwd=136 cpu=90.6
+  b11_fill_pass_rep2: alive=1/1 b=1/1 ind=138/157 fc_drop_lines=0 full_rej_lines=0 l1=0->0 sub_fwd=662 cpu=77.9
+  b11_fill_rej_rep2: alive=1/1 b=1/1 ind=300/300 fc_drop_lines=0 full_rej_lines=33 l1=0->64001 sub_fwd=2 cpu=1.1
+  b11_fill_lru_rep2: alive=1/1 b=1/1 ind=136/155 fc_drop_lines=0 full_rej_lines=0 l1=0->48001 sub_fwd=156 cpu=83.3
+  【H6】fc=1 CPU=[1.1, 1.0]（med 1.05） vs fc=0 CPU=[1.1, 0.8]（med 0.9500000000000001）
+  【P4】fc=1 臂 fc_drop 行>0：True；良性存活+指示非零：True
+  【P5】>32 关联 × FULLPOLICY 三臂（l1_drop 增量=fill 后 churn 期间）：
+    b11_fill_lru_rep1: full_rej_lines=0 l1 0→18001 alive=1 ind=108/127
+    b11_fill_lru_rep2: full_rej_lines=0 l1 0→48001 alive=1 ind=136/155
+    b11_fill_pass_rep1: full_rej_lines=0 l1 0→0 alive=1 ind=112/130
+    b11_fill_pass_rep2: full_rej_lines=0 l1 0→0 alive=1 ind=138/157
+    b11_fill_rej_rep1: full_rej_lines=33 l1 0→64001 alive=1 ind=301/350
+    b11_fill_rej_rep2: full_rej_lines=33 l1 0→64001 alive=1 ind=300/300
+  【缺陷#7 修复验证】截断+关闭 3/3 存活：['1', '1', '1']；短帧计数触发=True
+
+======================================================================
+R3C b2/b1 误伤机制定案（探针+时间线）
+======================================================================
+  r3c_l0_rep1: b2_ind=140 slow_locks=3883 max_hold=11042302us ep_events=117228 fd_peak=445
+  r3c_full_rep1: b2_ind=137 slow_locks=3329 max_hold=11036423us ep_events=888169 fd_peak=64
+  r3c_l0_rep2: b2_ind=145 slow_locks=2519 max_hold=11040596us ep_events=37770 fd_peak=281
+  r3c_full_rep2: b2_ind=398 slow_locks=5351 max_hold=10037308us ep_events=1341059 fd_peak=64
+  r3c_l0_rep3: b2_ind=261 slow_locks=3574 max_hold=11039176us ep_events=315055 fd_peak=327
+  r3c_full_rep3: b2_ind=137 slow_locks=3641 max_hold=11038148us ep_events=588299 fd_peak=81
+  r3c_full_rep1: b2 断流窗(攻击窗内)=4 锁事件密度 pre/atk/post = 59/1476/1040 次
+  r3c_full_rep2: b2 断流窗(攻击窗内)=0 锁事件密度 pre/atk/post = 54/2733/1586 次
+  r3c_full_rep3: b2 断流窗(攻击窗内)=4 锁事件密度 pre/atk/post = 66/1694/1049 次
+  r3c_l0_rep1: b2 断流窗(攻击窗内)=4 锁事件密度 pre/atk/post = 65/1828/1513 次
+  r3c_l0_rep2: b2 断流窗(攻击窗内)=2 锁事件密度 pre/atk/post = 61/1217/1068 次
+  r3c_l0_rep3: b2 断流窗(攻击窗内)=0 锁事件密度 pre/atk/post = 49/1611/1325 次
+
+======================================================================
+R3D 相变边界加密+滞后（附录 A 预言对照+R3F 前兆）
+======================================================================
+  【加密臂 vs 附录 A 预言】（预言 P 发散；实测=1-healthy 率）
+    cap20: healthy 1/3，实测 P 发散=0.67，预言=0.13
+    cap24: healthy 2/3，实测 P 发散=0.33，预言=0.21
+    cap28: healthy 2/3，实测 P 发散=0.33，预言=0.36
+  【H4】【更正 2026-10-20 双审后】按注册判据（P_healthy(20)≥P(24)≥P(28)）失败：
+    含早停 1/3<2/3、全程 0/2<2/3（cap20 唯一 healthy 系 2.05s 早停 run，sent=65400
+    天花板；全程口径 0/2 全发散——边界区更陡）。原句「单调成立」为换向读法
+    （发散率单调不增），不能替代注册方向——废止。Jeffreys CI 与分层全表见
+    results/R3/R3_H4_分层重报与判据改判.txt 与 results/R3H/R3H_arms_summary.txt
+  【滞后臂 H5】（T10→M30 vs M40 终态发散率；pendTO 终态 ≥1e5=发散）
+    M cap24: 发散 0/3 终态 pendTO=[0, 0, 0] 相位中点 pendTO_mid=[0, 0, 0]
+    M cap28: 发散 0/3 终态 pendTO=[0, 0, 0] 相位中点 pendTO_mid=[0, 0, 0]
+    M cap32: 发散 0/3 终态 pendTO=[0, 0, 0] 相位中点 pendTO_mid=[0, 0, 0]
+    T cap24: 发散 1/3 终态 pendTO=[0, 18892358, 0] 相位中点 pendTO_mid=[0, 0, 0]
+    T cap28: 发散 1/3 终态 pendTO=[22757833, 0, 0] 相位中点 pendTO_mid=[0, 0, 0]
+    T cap32: 发散 0/3 终态 pendTO=[23221, 0, 0] 相位中点 pendTO_mid=[0, 0, 0]
+  【H5】T 合并发散 2/9 vs M 0/9，Fisher 单侧 p=0.2353 → 无差或反向（如实入册：无滞后，亚稳随机切换读法）
+  【R3F 前兆】攻击窗内 10Hz CPU 方差/lag-1 AC（1Hz 饱和结论复核）
+    cap20: var med=15.7（n=3） lag1AC med=0.974
+    cap24: var med=0.2（n=3） lag1AC med=0.261
+    cap28: var med=0.1（n=3） lag1AC med=-0.057
+
+[r3_analyze 完成]

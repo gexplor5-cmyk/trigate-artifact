@@ -1,0 +1,2 @@
+run_id,variant,path,rep,disconnect_seen,auto_remove_seen,noxapp_cnt_after10s,rss_kb_after,ric_alive
+e_orig_kill9_rep1,orig,kill9,1,9,8,0,0.0,0
